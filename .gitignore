@@ -1,0 +1,44 @@
+# Built artifacts
+bin/
+gen/
+out/
+build/
+.gradle/
+
+# IDE - IntelliJ
+.idea/workspace.xml
+.idea/tasks.xml
+.idea/gradle.xml
+.idea/assetWizardSettings.xml
+.idea/dictionaries
+.idea/libraries
+.idea/caches
+.idea/modules.xml
+.idea/navEditor.xml
+*.iml
+
+# IDE - Android Studio
+*.jks
+*.keystore
+*.pk8
+*.p12
+google-services.json
+
+# Local configuration
+local.properties
+
+# OS generated files
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# Log files
+*.log
+
+# Android Captures
+captures/
+
+# External native build folder
+.externalNativeBuild/
+.cxx/

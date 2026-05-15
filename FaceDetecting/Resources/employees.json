@@ -1,0 +1,44 @@
+{
+  "userInfoList": [
+    {
+      "userNo": "41",
+      "userName": "金子 直人",
+      "userNameHuri": "カネコ ナオト",
+      "teamName": "JACIC",
+      "attendanceStatus": "未出勤",
+      "userImageUrl": null
+    },
+    {
+      "userNo": "42",
+      "userName": "田中 太郎",
+      "userNameHuri": "タナカ タロウ",
+      "teamName": "開発チーム",
+      "attendanceStatus": "出勤中",
+      "userImageUrl": null
+    },
+    {
+      "userNo": "43",
+      "userName": "山田 花子",
+      "userNameHuri": "ヤマダ ハナコ",
+      "teamName": "営業部",
+      "attendanceStatus": "未出勤",
+      "userImageUrl": null
+    },
+    {
+      "userNo": "44",
+      "userName": "佐藤 健一",
+      "userNameHuri": "サトウ ケンイチ",
+      "teamName": "総務部",
+      "attendanceStatus": "退勤済",
+      "userImageUrl": null
+    },
+    {
+      "userNo": "45",
+      "userName": "鈴木 美咲",
+      "userNameHuri": "スズキ ミサキ",
+      "teamName": "JACIC",
+      "attendanceStatus": "未出勤",
+      "userImageUrl": null
+    }
+  ]
+}

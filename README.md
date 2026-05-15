@@ -1,1 +1,1 @@
-# ondevice-face-rec
+# face-detection-ios

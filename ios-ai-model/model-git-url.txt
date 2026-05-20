@@ -1,0 +1,2 @@
+https://github.com/foamliu/MobileFaceNet/releases
+https://github.com/foamliu/MobileFaceNet/releases/tag/v1.0

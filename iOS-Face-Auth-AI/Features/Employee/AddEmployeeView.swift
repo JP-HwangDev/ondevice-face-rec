@@ -239,6 +239,16 @@ struct AddEmployeeView: View {
 
 /// Face ID 스타일 연속 자동 캡처: 자연스럽게 머리를 돌리면 각도 변화 감지 시 자동 촬영
 struct FaceRegisterCameraView: View {
+    private struct CapturedSample {
+        let vector: [Float]
+        let yaw: CGFloat
+        let pitch: CGFloat
+
+        var poseScore: CGFloat {
+            abs(yaw) + abs(pitch) * 1.2
+        }
+    }
+
     let onCapture: ([Float], [[Float]], String) -> Void
     @Environment(\.dismiss) private var dismiss
 
@@ -569,8 +579,9 @@ struct FaceRegisterCameraView: View {
             return
         }
         isCompleted = true
-        let avgVector = Employee.averageVector(from: capturedVectors)
-        onCapture(avgVector, capturedVectors, modelName)
+        let enrollmentVectors = selectedEnrollmentVectors()
+        let avgVector = Employee.averageVector(from: enrollmentVectors)
+        onCapture(avgVector, enrollmentVectors, modelName)
 
         DebugLogger.shared.log(category: .faceAuth,
             message: "얼굴 등록 완료: \(capturedVectors.count)장 수집",
@@ -582,6 +593,50 @@ struct FaceRegisterCameraView: View {
         Task {
             try? await Task.sleep(for: .seconds(1.5))
             dismiss()
+        }
+    }
+
+    private func selectedEnrollmentVectors() -> [[Float]] {
+        guard !capturedVectors.isEmpty else { return [] }
+
+        let samples = zip(capturedVectors, capturedAngles).map { vector, angle in
+            CapturedSample(vector: vector, yaw: angle.yaw, pitch: angle.pitch)
+        }
+
+        let frontal = samples
+            .filter { abs($0.yaw) < 0.16 && abs($0.pitch) < 0.12 }
+            .sorted { $0.poseScore < $1.poseScore }
+        let nearFrontal = samples
+            .filter { abs($0.yaw) < 0.28 && abs($0.pitch) < 0.20 }
+            .sorted { $0.poseScore < $1.poseScore }
+        let fallback = samples.sorted { $0.poseScore < $1.poseScore }
+
+        var selected: [CapturedSample] = []
+        appendSamples(from: frontal, to: &selected, limit: 5)
+        appendSamples(from: nearFrontal, to: &selected, limit: 10)
+        appendSamples(from: fallback, to: &selected, limit: min(samples.count, 12))
+
+        if selected.count < 5 {
+            return capturedVectors
+        }
+
+        return selected.map(\.vector)
+    }
+
+    private func appendSamples(from source: [CapturedSample], to selected: inout [CapturedSample], limit: Int) {
+        guard selected.count < limit else { return }
+
+        for sample in source {
+            guard selected.count < limit else { return }
+
+            let alreadyIncluded = selected.contains { existing in
+                existing.vector.count == sample.vector.count &&
+                zip(existing.vector, sample.vector).allSatisfy { abs($0 - $1) < 0.0001 }
+            }
+
+            if !alreadyIncluded {
+                selected.append(sample)
+            }
         }
     }
 }

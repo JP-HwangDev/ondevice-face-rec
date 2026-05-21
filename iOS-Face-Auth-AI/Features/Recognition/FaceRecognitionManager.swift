@@ -51,6 +51,10 @@ class FaceRecognitionManager: ObservableObject {
     private let maxMatches = 3
     private var lastProcessTime: Date = .distantPast
     private let processInterval: TimeInterval = 0.3
+    private let requiredStableFrames = 2
+    private let minimumTopGap: Float = 0.06
+    private var lastTopEmployeeID: String?
+    private var stableTopFrameCount = 0
 
     var activeModelName: String {
         embeddingExtractor.activeModelName ?? "목업"
@@ -112,6 +116,7 @@ class FaceRecognitionManager: ObservableObject {
             if wasDetected {
                 DebugLogger.shared.log(category: .faceAuth, message: "얼굴 감지 해제")
             }
+            resetMatchStability()
             detectedMatches = []
         }
     }
@@ -123,6 +128,7 @@ class FaceRecognitionManager: ObservableObject {
         guard modelStatus == .loaded,
               let pixelBuffer = currentPixelBuffer,
               let firstFace = faceObservations.first else {
+            resetMatchStability()
             detectedMatches = []
             return
         }
@@ -163,15 +169,11 @@ class FaceRecognitionManager: ObservableObject {
         }
 
         let allResults = compatibleEmployees.map { employee in
-            FaceMatch(employee: employee, confidence: bestSimilarity(current: currentVector, employee: employee))
+            FaceMatch(employee: employee, confidence: consensusSimilarity(current: currentVector, employee: employee))
         }
         .sorted { $0.confidence > $1.confidence }
 
-        let matches = allResults
-            .prefix(maxMatches)
-            .filter { $0.confidence > similarityThreshold }
-
-        detectedMatches = Array(matches)
+        detectedMatches = acceptedMatches(from: allResults)
 
         if let top = detectedMatches.first {
             DebugLogger.shared.log(
@@ -188,7 +190,7 @@ class FaceRecognitionManager: ObservableObject {
         }
     }
 
-    private func bestSimilarity(current: [Float], employee: Employee) -> Float {
+    private func consensusSimilarity(current: [Float], employee: Employee) -> Float {
         guard employee.isCompatible(withModel: embeddingExtractor.activeModelName, dimension: current.count) else {
             DebugLogger.shared.log(
                 level: .warning,
@@ -199,14 +201,24 @@ class FaceRecognitionManager: ObservableObject {
             return 0
         }
 
-        var best = cosineSimilarity(current, employee.faceVector)
-        for vector in employee.faceVectors where vector.count == current.count {
-            let similarity = cosineSimilarity(current, vector)
-            if similarity > best {
-                best = similarity
-            }
+        let prototypeSimilarity = cosineSimilarity(current, employee.faceVector)
+        let sampleSimilarities = employee.faceVectors
+            .filter { $0.count == current.count }
+            .map { cosineSimilarity(current, $0) }
+            .sorted(by: >)
+
+        guard !sampleSimilarities.isEmpty else {
+            return prototypeSimilarity
         }
-        return best
+
+        let topSampleAverage = average(sampleSimilarities.prefix(3))
+        let consistentSampleAverage = average(sampleSimilarities.prefix(5))
+        let consensusScore =
+            (prototypeSimilarity * 0.55) +
+            (topSampleAverage * 0.30) +
+            (consistentSampleAverage * 0.15)
+
+        return min(max(consensusScore, 0), 1)
     }
 
     func checkAttendance(for employee: Employee, type: AttendanceType = .checkIn) {
@@ -238,6 +250,64 @@ class FaceRecognitionManager: ObservableObject {
             }
             DebugLogger.shared.log(category: .faceAuth, message: "\(type.rawValue) 처리 완료: \(employee.name)", details: "부서 \(employee.department), 유사도 \(Int(confidence * 100))%")
         }
+    }
+
+    private func acceptedMatches(from results: [FaceMatch]) -> [FaceMatch] {
+        guard let top = results.first else {
+            resetMatchStability()
+            return []
+        }
+
+        let secondScore = results.dropFirst().first?.confidence ?? 0
+        let scoreGap = top.confidence - secondScore
+
+        guard top.confidence > similarityThreshold else {
+            resetMatchStability()
+            return []
+        }
+
+        guard scoreGap >= minimumTopGap || secondScore == 0 else {
+            resetMatchStability(keeping: top.employee.id)
+            return []
+        }
+
+        updateMatchStability(with: top.employee.id)
+        guard stableTopFrameCount >= requiredStableFrames else {
+            return []
+        }
+
+        return Array(
+            results
+                .prefix(maxMatches)
+                .filter { $0.confidence > similarityThreshold }
+        )
+    }
+
+    private func updateMatchStability(with employeeID: String) {
+        if lastTopEmployeeID == employeeID {
+            stableTopFrameCount += 1
+        } else {
+            lastTopEmployeeID = employeeID
+            stableTopFrameCount = 1
+        }
+    }
+
+    private func resetMatchStability(keeping employeeID: String? = nil) {
+        lastTopEmployeeID = employeeID
+        stableTopFrameCount = 0
+    }
+
+    private func average<S: Sequence>(_ values: S) -> Float where S.Element == Float {
+        var total: Float = 0
+        var count: Float = 0
+
+        for value in values {
+            total += value
+            count += 1
+        }
+
+        guard count > 0 else { return 0 }
+        return total / count
     }
 
     private func cosineSimilarity(_ a: [Float], _ b: [Float]) -> Float {

@@ -1,0 +1,415 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		ED84ECA22F2F98F100E2E6AF /* README.md in Resources */ = {isa = PBXBuildFile; fileRef = ED84ECA12F2F98E900E2E6AF /* README.md */; };
+		ED84ECB52F2F9C6800E2E6AF /* MOCK_GUIDE.md in Resources */ = {isa = PBXBuildFile; fileRef = ED84ECB42F2F9C6800E2E6AF /* MOCK_GUIDE.md */; };
+		ED84ECBB2F2F9DC300E2E6AF /* .gitignore in Resources */ = {isa = PBXBuildFile; fileRef = ED84ECBA2F2F9DBD00E2E6AF /* .gitignore */; };
+		ED84ED342F3CC1CD00E2E6AF /* 03_tech_stack_and_tools.md in Resources */ = {isa = PBXBuildFile; fileRef = ED84ED2D2F3CC1CD00E2E6AF /* 03_tech_stack_and_tools.md */; };
+		ED84ED362F3CC1CD00E2E6AF /* 04_requirements_and_optimization.md in Resources */ = {isa = PBXBuildFile; fileRef = ED84ED2E2F3CC1CD00E2E6AF /* 04_requirements_and_optimization.md */; };
+		ED84ED372F3CC1CD00E2E6AF /* 02_flow_and_control.md in Resources */ = {isa = PBXBuildFile; fileRef = ED84ED2C2F3CC1CD00E2E6AF /* 02_flow_and_control.md */; };
+		ED84ED382F3CC1CD00E2E6AF /* 05_ios_face_recognition_overview.md in Resources */ = {isa = PBXBuildFile; fileRef = ED84ED2F2F3CC1CD00E2E6AF /* 05_ios_face_recognition_overview.md */; };
+		ED84ED392F3CC1CD00E2E6AF /* 06_ios_tech_stack.md in Resources */ = {isa = PBXBuildFile; fileRef = ED84ED302F3CC1CD00E2E6AF /* 06_ios_tech_stack.md */; };
+		ED84ED3A2F3CC1CD00E2E6AF /* 07_model_conversion_and_deployment.md in Resources */ = {isa = PBXBuildFile; fileRef = ED84ED312F3CC1CD00E2E6AF /* 07_model_conversion_and_deployment.md */; };
+		ED84ED3B2F3CC1CD00E2E6AF /* 01_structured_context.md in Resources */ = {isa = PBXBuildFile; fileRef = ED84ED2B2F3CC1CD00E2E6AF /* 01_structured_context.md */; };
+		ED84ED3F2F3CC65200E2E6AF /* AuraFace.mlmodel in Sources */ = {isa = PBXBuildFile; fileRef = ED84ED3E2F3CC65200E2E6AF /* AuraFace.mlmodel */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		ED84ECA12F2F98E900E2E6AF /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
+		ED84ECB42F2F9C6800E2E6AF /* MOCK_GUIDE.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = MOCK_GUIDE.md; sourceTree = "<group>"; };
+		ED84ECBA2F2F9DBD00E2E6AF /* .gitignore */ = {isa = PBXFileReference; lastKnownFileType = text; path = .gitignore; sourceTree = "<group>"; };
+		ED84ECBC2F2F9FD600E2E6AF /* iOS-Face-Auth-AI.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "iOS-Face-Auth-AI.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		ED84ED2B2F3CC1CD00E2E6AF /* 01_structured_context.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = 01_structured_context.md; sourceTree = "<group>"; };
+		ED84ED2C2F3CC1CD00E2E6AF /* 02_flow_and_control.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = 02_flow_and_control.md; sourceTree = "<group>"; };
+		ED84ED2D2F3CC1CD00E2E6AF /* 03_tech_stack_and_tools.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = 03_tech_stack_and_tools.md; sourceTree = "<group>"; };
+		ED84ED2E2F3CC1CD00E2E6AF /* 04_requirements_and_optimization.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = 04_requirements_and_optimization.md; sourceTree = "<group>"; };
+		ED84ED2F2F3CC1CD00E2E6AF /* 05_ios_face_recognition_overview.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = 05_ios_face_recognition_overview.md; sourceTree = "<group>"; };
+		ED84ED302F3CC1CD00E2E6AF /* 06_ios_tech_stack.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = 06_ios_tech_stack.md; sourceTree = "<group>"; };
+		ED84ED312F3CC1CD00E2E6AF /* 07_model_conversion_and_deployment.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = 07_model_conversion_and_deployment.md; sourceTree = "<group>"; };
+		ED84ED3E2F3CC65200E2E6AF /* AuraFace.mlmodel */ = {isa = PBXFileReference; lastKnownFileType = file.mlmodel; path = AuraFace.mlmodel; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		ED84EC8B2F2F98A100E2E6AF /* iOS-Face-Auth-AI */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = "iOS-Face-Auth-AI";
+			sourceTree = "<group>";
+		};
+		ED84ECAD2F2F994D00E2E6AF /* docs */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = docs;
+			sourceTree = "<group>";
+		};
+/* End PBXFileSystemSynchronizedRootGroup section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		ED84EC862F2F98A100E2E6AF /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		ED84EC802F2F98A100E2E6AF = {
+			isa = PBXGroup;
+			children = (
+				ED84ECBA2F2F9DBD00E2E6AF /* .gitignore */,
+				ED84ECAD2F2F994D00E2E6AF /* docs */,
+				ED84ECA12F2F98E900E2E6AF /* README.md */,
+				ED84ED332F3CC1CD00E2E6AF /* docs2 */,
+				ED84EC8B2F2F98A100E2E6AF /* iOS-Face-Auth-AI */,
+				ED84ECB42F2F9C6800E2E6AF /* MOCK_GUIDE.md */,
+				ED84ECBC2F2F9FD600E2E6AF /* iOS-Face-Auth-AI.app */,
+				ED84ED3E2F3CC65200E2E6AF /* AuraFace.mlmodel */,
+			);
+			sourceTree = "<group>";
+		};
+		ED84ED332F3CC1CD00E2E6AF /* docs2 */ = {
+			isa = PBXGroup;
+			children = (
+				ED84ED2B2F3CC1CD00E2E6AF /* 01_structured_context.md */,
+				ED84ED2C2F3CC1CD00E2E6AF /* 02_flow_and_control.md */,
+				ED84ED2D2F3CC1CD00E2E6AF /* 03_tech_stack_and_tools.md */,
+				ED84ED2E2F3CC1CD00E2E6AF /* 04_requirements_and_optimization.md */,
+				ED84ED2F2F3CC1CD00E2E6AF /* 05_ios_face_recognition_overview.md */,
+				ED84ED302F3CC1CD00E2E6AF /* 06_ios_tech_stack.md */,
+				ED84ED312F3CC1CD00E2E6AF /* 07_model_conversion_and_deployment.md */,
+			);
+			path = docs2;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		ED84EC882F2F98A100E2E6AF /* iOS-Face-Auth-AI */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = ED84EC962F2F98A200E2E6AF /* Build configuration list for PBXNativeTarget "iOS-Face-Auth-AI" */;
+			buildPhases = (
+				ED84EC852F2F98A100E2E6AF /* Sources */,
+				ED84EC862F2F98A100E2E6AF /* Frameworks */,
+				ED84EC872F2F98A100E2E6AF /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				ED84EC8B2F2F98A100E2E6AF /* iOS-Face-Auth-AI */,
+			);
+			name = "iOS-Face-Auth-AI";
+			packageProductDependencies = (
+				ED84ED412F3CD00000E2E6AF /* GRDB */,
+			);
+			productName = "iOS-Face-Auth-AI";
+			productReference = ED84ECBC2F2F9FD600E2E6AF /* iOS-Face-Auth-AI.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		ED84EC812F2F98A100E2E6AF /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 2620;
+				LastUpgradeCheck = 2620;
+				TargetAttributes = {
+					ED84EC882F2F98A100E2E6AF = {
+						CreatedOnToolsVersion = 26.2;
+					};
+				};
+			};
+			buildConfigurationList = ED84EC842F2F98A100E2E6AF /* Build configuration list for PBXProject "iOS-Face-Auth-AI" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = ED84EC802F2F98A100E2E6AF;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = ED84EC802F2F98A100E2E6AF;
+			packageReferences = (
+				ED84ED402F3CD00000E2E6AF /* XCRemoteSwiftPackageReference "GRDB.swift" */,
+			);
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				ED84EC882F2F98A100E2E6AF /* iOS-Face-Auth-AI */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		ED84EC872F2F98A100E2E6AF /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				ED84ECB52F2F9C6800E2E6AF /* MOCK_GUIDE.md in Resources */,
+				ED84ECA22F2F98F100E2E6AF /* README.md in Resources */,
+				ED84ED342F3CC1CD00E2E6AF /* 03_tech_stack_and_tools.md in Resources */,
+				ED84ED362F3CC1CD00E2E6AF /* 04_requirements_and_optimization.md in Resources */,
+				ED84ED372F3CC1CD00E2E6AF /* 02_flow_and_control.md in Resources */,
+				ED84ED382F3CC1CD00E2E6AF /* 05_ios_face_recognition_overview.md in Resources */,
+				ED84ED392F3CC1CD00E2E6AF /* 06_ios_tech_stack.md in Resources */,
+				ED84ED3A2F3CC1CD00E2E6AF /* 07_model_conversion_and_deployment.md in Resources */,
+				ED84ED3B2F3CC1CD00E2E6AF /* 01_structured_context.md in Resources */,
+				ED84ECBB2F2F9DC300E2E6AF /* .gitignore in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		ED84EC852F2F98A100E2E6AF /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				ED84ED3F2F3CC65200E2E6AF /* AuraFace.mlmodel in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		ED84EC942F2F98A200E2E6AF /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = GJ3627HC2U;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.2;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		ED84EC952F2F98A200E2E6AF /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = GJ3627HC2U;
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.2;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		ED84EC972F2F98A200E2E6AF /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = GJ3627HC2U;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSCameraUsageDescription = "얼굴 인식을 위해 카메라 권한이 필요합니다.";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "rsp.iOS-Face-Auth-AI";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		ED84EC982F2F98A200E2E6AF /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = GJ3627HC2U;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSCameraUsageDescription = "얼굴 인식을 위해 카메라 권한이 필요합니다.";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "rsp.iOS-Face-Auth-AI";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		ED84EC842F2F98A100E2E6AF /* Build configuration list for PBXProject "iOS-Face-Auth-AI" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				ED84EC942F2F98A200E2E6AF /* Debug */,
+				ED84EC952F2F98A200E2E6AF /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		ED84EC962F2F98A200E2E6AF /* Build configuration list for PBXNativeTarget "iOS-Face-Auth-AI" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				ED84EC972F2F98A200E2E6AF /* Debug */,
+				ED84EC982F2F98A200E2E6AF /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		ED84ED402F3CD00000E2E6AF /* XCRemoteSwiftPackageReference "GRDB.swift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/groue/GRDB.swift.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 7.0.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		ED84ED412F3CD00000E2E6AF /* GRDB */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = ED84ED402F3CD00000E2E6AF /* XCRemoteSwiftPackageReference "GRDB.swift" */;
+			productName = GRDB;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = ED84EC812F2F98A100E2E6AF /* Project object */;
+}

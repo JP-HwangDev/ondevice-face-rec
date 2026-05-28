@@ -9,8 +9,5 @@
 models/
 pretrained/
 
-AuraFace.mlmodel
+!AuraFace.mlmodel
 MobileFaceNet.mlmodel
-!MobileFaceNet.mlmodel
-!mobilefacenet.pt
-!mobilefacenet_scripted.pt

@@ -11,7 +11,7 @@ struct SettingsView: View {
     @ObservedObject private var employeeStore = EmployeeStore.shared
     @ObservedObject private var attendanceStore = AttendanceStore.shared
 
-    @AppStorage("similarity_threshold") private var similarityThreshold = 0.6
+    @AppStorage("similarity_threshold") private var similarityThreshold = 0.4
     @AppStorage("enable_haptic") private var enableHaptic = true
     @AppStorage("auto_dismiss_camera") private var autoDismissCamera = true
     @AppStorage("show_confidence") private var showConfidence = true
@@ -32,12 +32,12 @@ struct SettingsView: View {
                                 .foregroundStyle(.blue)
                                 .fontWeight(.semibold)
                         }
-                        Slider(value: $similarityThreshold, in: 0.3...0.9, step: 0.05)
+                        Slider(value: $similarityThreshold, in: 0.2...0.7, step: 0.05)
                             .tint(.blue)
                             .onChange(of: similarityThreshold) { _, newValue in
                                 DebugLogger.shared.log(category: .general, message: "설정 변경: 유사도 임계값 → \(Int(newValue * 100))%")
                             }
-                        Text("높을수록 엄격하게 판별합니다. 권장: 60~70%")
+                        Text("높을수록 엄격하게 판별합니다. 권장: 35~50%")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -83,9 +83,9 @@ struct SettingsView: View {
                     LabeledContent("Core ML 모델") {
                         HStack(spacing: 4) {
                             Circle()
-                                .fill(modelAvailable ? Color.green : Color.orange)
+                                .fill(bundledModelName == nil ? Color.orange : Color.green)
                                 .frame(width: 8, height: 8)
-                            Text(modelAvailable ? "AuraFace" : "목업 모드")
+                            Text(bundledModelName ?? "목업 모드")
                                 .font(.subheadline)
                         }
                     }
@@ -104,7 +104,7 @@ struct SettingsView: View {
                     techStackRow(name: "SwiftUI", detail: "UI 프레임워크")
                     techStackRow(name: "AVFoundation", detail: "카메라 제어")
                     techStackRow(name: "Vision", detail: "얼굴 감지")
-                    techStackRow(name: "Core ML", detail: "AuraFace 추론")
+                    techStackRow(name: "Core ML", detail: coreMLDetail)
                     techStackRow(name: "Accelerate", detail: "벡터 유사도 계산")
                     techStackRow(name: "GRDB.swift", detail: "SQLite 로컬 DB")
                 }
@@ -148,8 +148,20 @@ struct SettingsView: View {
         }
     }
 
-    private var modelAvailable: Bool {
-        Bundle.main.url(forResource: "AuraFace", withExtension: "mlmodelc") != nil
+    private var bundledModelName: String? {
+        for candidate in FaceEmbeddingExtractor.supportedModels {
+            if Bundle.main.url(forResource: candidate.resourceName, withExtension: "mlmodelc") != nil {
+                return candidate.displayName
+            }
+        }
+        return nil
+    }
+
+    private var coreMLDetail: String {
+        if let bundledModelName {
+            return "\(bundledModelName) 추론"
+        }
+        return "모델 미포함"
     }
 
     private func techStackRow(name: String, detail: String) -> some View {

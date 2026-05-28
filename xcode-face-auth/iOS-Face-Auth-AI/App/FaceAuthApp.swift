@@ -9,8 +9,13 @@ import SwiftUI
 
 @main
 struct FaceAuthApp: App {
+    private let defaultSimilarityThreshold = 0.4
 
     init() {
+        UserDefaults.standard.register(defaults: [
+            "similarity_threshold": defaultSimilarityThreshold
+        ])
+
         do {
             try DatabaseManager.shared.setup()
             DebugLogger.shared.log(category: .database, message: "GRDB 데이터베이스 초기화 완료")

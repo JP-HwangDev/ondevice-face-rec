@@ -27,3 +27,7 @@ xcuserdata/
 .swiftpm/
 
 .claude
+
+# ML Models
+!AuraFace.mlmodel
+MobileFaceNet.mlmodel

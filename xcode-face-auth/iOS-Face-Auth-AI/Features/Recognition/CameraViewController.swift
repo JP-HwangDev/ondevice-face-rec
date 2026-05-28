@@ -78,10 +78,8 @@ class CameraViewController: UIViewController {
             // 비디오 연결 설정
             if let connection = videoDataOutput.connection(with: .video) {
                 connection.isEnabled = true
-                // 전면 카메라 미러링
-                if connection.isVideoMirroringSupported {
-                    connection.isVideoMirrored = true
-                }
+                // Vision이 .leftMirrored orientation으로 미러링을 직접 처리하므로
+                // 픽셀버퍼에 미러링 적용 시 이중 미러링으로 Y축 반전 버그 발생 → 설정 안 함
             }
 
             // 프리뷰 레이어 설정

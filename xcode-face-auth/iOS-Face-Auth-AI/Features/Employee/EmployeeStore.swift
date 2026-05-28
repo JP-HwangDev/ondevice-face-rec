@@ -10,7 +10,7 @@ import Combine
 import SwiftUI
 import GRDB
 
-/// 앱 전역 사원 데이터 저장소 (GRDB/SQLite 영속 저장)
+/// App-wide employee store backed by GRDB/SQLite.
 @MainActor
 class EmployeeStore: ObservableObject {
     static let shared = EmployeeStore()
@@ -31,7 +31,11 @@ class EmployeeStore: ObservableObject {
                 try employee.insert(db)
             }
             employees.append(employee)
-            DebugLogger.shared.log(category: .database, message: "사원 추가: \(employee.name) (\(employee.department))", details: "벡터 수: \(employee.faceVectors.count), 차원: \(employee.faceVector.count)")
+            DebugLogger.shared.log(
+                category: .database,
+                message: "사원 추가: \(employee.name) (\(employee.department))",
+                details: "모델: \(employee.embeddingModel), 벡터 수: \(employee.faceVectors.count), 차원: \(employee.faceVector.count)"
+            )
         } catch {
             DebugLogger.shared.log(level: .error, category: .database, message: "사원 추가 실패: \(employee.name)", details: error.localizedDescription)
         }
@@ -41,12 +45,12 @@ class EmployeeStore: ObservableObject {
         let toDelete = offsets.map { employees[$0] }
         do {
             try dbQueue.write { db in
-                for emp in toDelete {
-                    try emp.delete(db)
+                for employee in toDelete {
+                    try employee.delete(db)
                 }
             }
             employees.remove(atOffsets: offsets)
-            let names = toDelete.map { $0.name }.joined(separator: ", ")
+            let names = toDelete.map(\.name).joined(separator: ", ")
             DebugLogger.shared.log(level: .warning, category: .database, message: "사원 삭제: \(names)")
         } catch {
             DebugLogger.shared.log(level: .error, category: .database, message: "사원 삭제 실패", details: error.localizedDescription)
@@ -73,7 +77,11 @@ class EmployeeStore: ObservableObject {
             if let index = employees.firstIndex(where: { $0.id == employee.id }) {
                 employees[index] = employee
             }
-            DebugLogger.shared.log(category: .database, message: "사원 수정: \(employee.name) (\(employee.department))")
+            DebugLogger.shared.log(
+                category: .database,
+                message: "사원 수정: \(employee.name) (\(employee.department))",
+                details: "모델: \(employee.embeddingModel), 차원: \(employee.embeddingDimension)"
+            )
         } catch {
             DebugLogger.shared.log(level: .error, category: .database, message: "사원 수정 실패: \(employee.name)", details: error.localizedDescription)
         }
@@ -92,43 +100,41 @@ class EmployeeStore: ObservableObject {
         }
     }
 
-    // MARK: - 부서별 그룹
+    // MARK: - Grouping
 
     var departmentGroups: [String: [Employee]] {
-        Dictionary(grouping: employees, by: { $0.department })
+        Dictionary(grouping: employees, by: \.department)
     }
 
     var sortedDepartments: [String] {
         departmentGroups.keys.sorted()
     }
 
-    // MARK: - DB 로드
+    // MARK: - DB Loading
 
     private func load() {
         guard DatabaseManager.shared.dbQueue != nil else { return }
+
         do {
             employees = try dbQueue.read { db in
                 try Employee.fetchAll(db)
             }
 
-            // 첫 실행이면 목업 데이터 삽입
             if employees.isEmpty {
-                try dbQueue.write { db in
-                    for emp in Employee.mockEmployees {
-                        try emp.insert(db)
-                    }
-                }
-                employees = Employee.mockEmployees
-                DebugLogger.shared.log(category: .database, message: "첫 실행 — 목업 사원 \(employees.count)명 삽입")
+                DebugLogger.shared.log(
+                    level: .warning,
+                    category: .database,
+                    message: "사원 DB가 비어 있음",
+                    details: "실사용 전 사원 얼굴 등록이 필요합니다."
+                )
+            } else {
+                DebugLogger.shared.log(category: .database, message: "사원 DB 로드 완료: \(employees.count)명")
             }
-
-            DebugLogger.shared.log(category: .database, message: "사원 DB 로드 완료: \(employees.count)명")
         } catch {
             DebugLogger.shared.log(level: .error, category: .database, message: "사원 DB 로드 실패", details: error.localizedDescription)
         }
     }
 
-    /// 외부에서 DB 변경 후 리로드
     func reload() {
         load()
     }

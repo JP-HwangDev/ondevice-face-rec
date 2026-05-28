@@ -23,6 +23,7 @@ struct AddEmployeeView: View {
     @State private var showCamera = false
     @State private var capturedVector: [Float]? = nil
     @State private var capturedVectors: [[Float]] = []
+    @State private var capturedModelName: String? = nil
 
     @State private var showValidationAlert = false
     @State private var validationMessage = ""
@@ -88,7 +89,7 @@ struct AddEmployeeView: View {
                                     .fontWeight(.semibold)
                                     .foregroundStyle(.primary)
                                 let dim = capturedVectors.first?.count ?? 512
-                                Text("\(capturedVectors.count)개 각도에서 \(dim)차원 벡터 수집됨")
+                                Text("\(capturedVectors.count)개 각도, \(capturedModelName ?? "모델 미확인"), \(dim)차원")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
@@ -182,9 +183,10 @@ struct AddEmployeeView: View {
                 }
             }
             .fullScreenCover(isPresented: $showCamera) {
-                FaceRegisterCameraView { vector, vectors in
+                FaceRegisterCameraView { vector, vectors, modelName in
                     capturedVector = vector
                     capturedVectors = vectors
+                    capturedModelName = modelName
                     faceRegistered = true
                 }
             }
@@ -215,10 +217,16 @@ struct AddEmployeeView: View {
             showValidationAlert = true
             return
         }
+        guard let modelName = capturedModelName else {
+            validationMessage = "임베딩 모델이 준비되지 않았습니다. 모델 파일을 확인해주세요."
+            showValidationAlert = true
+            return
+        }
 
         let employee = Employee(
             name: trimmedName,
             department: trimmedDept,
+            embeddingModel: modelName,
             faceVector: vector,
             faceVectors: capturedVectors
         )
@@ -231,7 +239,17 @@ struct AddEmployeeView: View {
 
 /// Face ID 스타일 연속 자동 캡처: 자연스럽게 머리를 돌리면 각도 변화 감지 시 자동 촬영
 struct FaceRegisterCameraView: View {
-    let onCapture: ([Float], [[Float]]) -> Void
+    private struct CapturedSample {
+        let vector: [Float]
+        let yaw: CGFloat
+        let pitch: CGFloat
+
+        var poseScore: CGFloat {
+            abs(yaw) + abs(pitch) * 1.2
+        }
+    }
+
+    let onCapture: ([Float], [[Float]], String) -> Void
     @Environment(\.dismiss) private var dismiss
 
     @State private var faceObservations: [VNFaceObservation] = []
@@ -255,6 +273,10 @@ struct FaceRegisterCameraView: View {
 
     private var progress: Double {
         Double(capturedVectors.count) / Double(targetCaptures)
+    }
+
+    private var activeModelName: String? {
+        embeddingExtractor.activeModelName
     }
 
     var body: some View {
@@ -287,6 +309,10 @@ struct FaceRegisterCameraView: View {
 
             if isCompleted {
                 completionOverlay
+            }
+
+            if !embeddingExtractor.isModelLoaded {
+                modelUnavailableOverlay
             }
         }
     }
@@ -392,7 +418,7 @@ struct FaceRegisterCameraView: View {
     private var instructionView: some View {
         VStack(spacing: 12) {
             if !isFaceDetected {
-                Text("카메라에 얼굴이 보이도록 해주세요")
+                Text(embeddingExtractor.isModelLoaded ? "카메라에 얼굴이 보이도록 해주세요" : "모델 파일이 없어 얼굴 등록을 진행할 수 없습니다")
                     .font(.subheadline)
                     .foregroundStyle(.white.opacity(0.8))
             } else {
@@ -449,8 +475,8 @@ struct FaceRegisterCameraView: View {
                     .font(.subheadline)
                     .foregroundStyle(.white.opacity(0.7))
 
-                if embeddingExtractor.isModelLoaded {
-                    Label("Core ML 모델 사용", systemImage: "cpu.fill")
+                if let activeModelName {
+                    Label("\(activeModelName) 모델 사용", systemImage: "cpu.fill")
                         .font(.caption)
                         .foregroundStyle(.green)
                 } else {
@@ -466,9 +492,34 @@ struct FaceRegisterCameraView: View {
         .transition(.opacity)
     }
 
+    private var modelUnavailableOverlay: some View {
+        VStack {
+            Spacer()
+
+            VStack(spacing: 12) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.title)
+                    .foregroundStyle(.yellow)
+                Text("임베딩 모델 없음")
+                    .font(.headline)
+                    .foregroundStyle(.white)
+                Text("AuraFace.mlmodel 또는 MobileFaceNet.mlmodel을 번들에 추가한 뒤 다시 시도해주세요.")
+                    .font(.subheadline)
+                    .foregroundStyle(.white.opacity(0.8))
+                    .multilineTextAlignment(.center)
+            }
+            .padding(24)
+            .background(.ultraThinMaterial)
+            .cornerRadius(20)
+            .padding(.horizontal, 24)
+            .padding(.bottom, 80)
+        }
+    }
+
     // MARK: - 자동 캡처 로직
 
     private func processFrame(from observations: [VNFaceObservation]) {
+        guard embeddingExtractor.isModelLoaded else { return }
         guard let face = observations.first else { return }
 
         currentYaw = face.yaw?.doubleValue ?? 0
@@ -499,16 +550,12 @@ struct FaceRegisterCameraView: View {
     }
 
     private func captureOneShot() async {
-        var vector: [Float]
-
-        if embeddingExtractor.isModelLoaded,
-           let pixelBuffer = currentPixelBuffer,
-           let face = faceObservations.first,
-           let embedding = await embeddingExtractor.extractEmbedding(from: pixelBuffer, boundingBox: face.boundingBox) {
-            vector = embedding
-        } else {
-            let dim = embeddingExtractor.embeddingDimension
-            vector = (0..<dim).map { _ in Float.random(in: -1...1) }
+        guard embeddingExtractor.isModelLoaded,
+              let pixelBuffer = currentPixelBuffer,
+              let face = faceObservations.first,
+              let vector = await embeddingExtractor.extractEmbedding(from: pixelBuffer, boundingBox: face.boundingBox) else {
+            DebugLogger.shared.log(level: .warning, category: .faceAuth, message: "얼굴 등록 캡처 실패", details: "모델 또는 얼굴 프레임을 확인해주세요.")
+            return
         }
 
         capturedVectors.append(vector)
@@ -527,9 +574,14 @@ struct FaceRegisterCameraView: View {
     }
 
     private func completeRegistration() {
+        guard let modelName = activeModelName else {
+            DebugLogger.shared.log(level: .error, category: .faceAuth, message: "얼굴 등록 완료 실패", details: "활성 모델 정보를 찾을 수 없습니다.")
+            return
+        }
         isCompleted = true
-        let avgVector = Employee.averageVector(from: capturedVectors)
-        onCapture(avgVector, capturedVectors)
+        let enrollmentVectors = selectedEnrollmentVectors()
+        let avgVector = Employee.averageVector(from: enrollmentVectors)
+        onCapture(avgVector, enrollmentVectors, modelName)
 
         DebugLogger.shared.log(category: .faceAuth,
             message: "얼굴 등록 완료: \(capturedVectors.count)장 수집",
@@ -541,6 +593,50 @@ struct FaceRegisterCameraView: View {
         Task {
             try? await Task.sleep(for: .seconds(1.5))
             dismiss()
+        }
+    }
+
+    private func selectedEnrollmentVectors() -> [[Float]] {
+        guard !capturedVectors.isEmpty else { return [] }
+
+        let samples = zip(capturedVectors, capturedAngles).map { vector, angle in
+            CapturedSample(vector: vector, yaw: angle.yaw, pitch: angle.pitch)
+        }
+
+        let frontal = samples
+            .filter { abs($0.yaw) < 0.16 && abs($0.pitch) < 0.12 }
+            .sorted { $0.poseScore < $1.poseScore }
+        let nearFrontal = samples
+            .filter { abs($0.yaw) < 0.28 && abs($0.pitch) < 0.20 }
+            .sorted { $0.poseScore < $1.poseScore }
+        let fallback = samples.sorted { $0.poseScore < $1.poseScore }
+
+        var selected: [CapturedSample] = []
+        appendSamples(from: frontal, to: &selected, limit: 5)
+        appendSamples(from: nearFrontal, to: &selected, limit: 10)
+        appendSamples(from: fallback, to: &selected, limit: min(samples.count, 12))
+
+        if selected.count < 5 {
+            return capturedVectors
+        }
+
+        return selected.map(\.vector)
+    }
+
+    private func appendSamples(from source: [CapturedSample], to selected: inout [CapturedSample], limit: Int) {
+        guard selected.count < limit else { return }
+
+        for sample in source {
+            guard selected.count < limit else { return }
+
+            let alreadyIncluded = selected.contains { existing in
+                existing.vector.count == sample.vector.count &&
+                zip(existing.vector, sample.vector).allSatisfy { abs($0 - $1) < 0.0001 }
+            }
+
+            if !alreadyIncluded {
+                selected.append(sample)
+            }
         }
     }
 }

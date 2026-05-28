@@ -26,9 +26,6 @@ struct FaceRecognitionView: View {
     /// 카메라 이미지 크기 (Vision 좌표 → 화면 좌표 변환에 필요)
     @State private var cameraImageSize: CGSize = .zero
 
-    /// 랜드마크 포함 observations (bbox 그리기용)
-    @State private var landmarkObservations: [VNFaceObservation] = []
-
     var body: some View {
         ZStack {
             // 카메라 프리뷰 + Vision 얼굴 감지
@@ -38,8 +35,8 @@ struct FaceRecognitionView: View {
                     recognitionManager.processFaceObservations(observations, pixelBuffer: pixelBuffer)
                 },
                 onLandmarksDetected: { observations in
-                    // Landmarks 결과 → 정확한 bbox 그리기용
-                    landmarkObservations = observations
+                    // Landmarks are currently unused for the visible guide box.
+                    _ = observations
                 },
                 onImageSizeDetected: { size in
                     // 픽셀 버퍼는 카메라 네이티브(가로), Vision은 .leftMirrored로 세로 처리
@@ -55,9 +52,9 @@ struct FaceRecognitionView: View {
                 DebugLogger.shared.log(category: .faceAuth, message: "얼굴 인식 카메라 화면 닫힘")
             }
 
-            // 전체 화면 바운딩 박스 오버레이 (랜드마크 기반 + aspectFill 보정)
+            // 전체 화면 바운딩 박스 오버레이 (인식 결과와 같은 FaceRectangles 기반 + aspectFill 보정)
             GeometryReader { geometry in
-                ForEach(Array(landmarkObservations.enumerated()), id: \.offset) { index, observation in
+                ForEach(Array(recognitionManager.faceObservations.enumerated()), id: \.offset) { index, observation in
                     let faceRect = visionFaceToScreen(observation, in: geometry.size)
                     let matchColor: Color = recognitionManager.detectedMatches.isEmpty ? .blue : .green
 
@@ -155,8 +152,8 @@ struct FaceRecognitionView: View {
     /// VNFaceObservation의 랜드마크(턱선/눈썹 등)로 정확한 얼굴 영역을 계산하고
     /// 화면 좌표(좌상단 원점)로 변환. resizeAspectFill 스케일링/크롭 반영.
     private func visionFaceToScreen(_ observation: VNFaceObservation, in viewSize: CGSize) -> CGRect {
-        // 랜드마크에서 얼굴 전체를 감싸는 정규화된 bbox 계산
-        let normalizedRect = landmarkBoundingRect(for: observation)
+        // Pitch changes move landmarks inside the face, so use Vision's face box as the stable overlay anchor.
+        let normalizedRect = expandedBBox(observation.boundingBox)
         return normalizedRectToScreen(normalizedRect, in: viewSize)
     }
 
@@ -223,14 +220,29 @@ struct FaceRecognitionView: View {
 
     /// 랜드마크 없을 때 폴백: bbox에 마진 추가
     private func expandedBBox(_ bbox: CGRect) -> CGRect {
-        let marginX = bbox.width * 0.15
-        let marginTop = bbox.height * 0.40
-        let marginBottom = bbox.height * 0.30
-        return CGRect(
+        // Visible guide only: keep it tight so the box follows the face, not hair/neck/background.
+        let marginX = bbox.width * 0.04
+        let marginTop = bbox.height * 0.08
+        let marginBottom = bbox.height * 0.06
+        return clampedNormalizedRect(CGRect(
             x: bbox.origin.x - marginX,
             y: bbox.origin.y - marginBottom,
             width: bbox.width + marginX * 2,
             height: bbox.height + marginTop + marginBottom
+        ))
+    }
+
+    private func clampedNormalizedRect(_ rect: CGRect) -> CGRect {
+        let minX = max(0, rect.minX)
+        let minY = max(0, rect.minY)
+        let maxX = min(1, rect.maxX)
+        let maxY = min(1, rect.maxY)
+
+        return CGRect(
+            x: minX,
+            y: minY,
+            width: max(0, maxX - minX),
+            height: max(0, maxY - minY)
         )
     }
 
@@ -355,7 +367,7 @@ struct FaceRecognitionView: View {
                 case .loaded:
                     Image(systemName: "cpu.fill")
                         .foregroundStyle(.green)
-                    Text("AuraFace 로드됨")
+                    Text("\(recognitionManager.activeModelName) 로드됨")
                         .foregroundStyle(.green)
                 case .mockMode:
                     Image(systemName: "exclamationmark.triangle.fill")

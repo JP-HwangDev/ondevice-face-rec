@@ -13,7 +13,6 @@ import CoreML
 import CoreVideo
 import UIKit
 
-/// 얼굴 인식 처리 (Vision + Core ML AuraFace + 출석 기록)
 @MainActor
 class FaceRecognitionManager: ObservableObject {
     @Published var detectedMatches: [FaceMatch] = []
@@ -23,15 +22,14 @@ class FaceRecognitionManager: ObservableObject {
     @Published var lastAttendanceResult: AttendanceResult?
     @Published var cameraImageSize: CGSize = .zero
 
-    /// Core ML 모델 로드 상태
     enum ModelStatus {
         case notLoaded
         case loaded
         case mockMode
     }
+
     @Published var modelStatus: ModelStatus = .notLoaded
 
-    /// 출석 체크 결과
     struct AttendanceResult: Identifiable {
         let id = UUID()
         let employee: Employee
@@ -41,24 +39,30 @@ class FaceRecognitionManager: ObservableObject {
         let timestamp: Date
     }
 
-    /// 얼굴 임베딩 추출기 (Core ML)
     private let embeddingExtractor = FaceEmbeddingExtractor()
-
-    /// 현재 처리 중인 픽셀 버퍼
     private var currentPixelBuffer: CVPixelBuffer?
 
-    /// 최소 유사도 임계값 (설정에서 조절)
+    // AuraFace raw cosine 기준: 본인 0.5~0.8, 타인 0.0~0.3
     private var similarityThreshold: Float {
         let value = UserDefaults.standard.double(forKey: "similarity_threshold")
-        return Float(value > 0 ? value : 0.6)
+        return Float(value > 0 ? value : 0.4)
     }
 
-    /// 최대 매칭 결과 수
     private let maxMatches = 3
-
-    /// 디바운스 (과도한 처리 방지)
     private var lastProcessTime: Date = .distantPast
     private let processInterval: TimeInterval = 0.3
+    private let requiredStableFrames = 2
+    private let minimumTopGap: Float = 0.06
+    private var lastTopEmployeeID: String?
+    private var stableTopFrameCount = 0
+
+    var activeModelName: String {
+        embeddingExtractor.activeModelName ?? "목업"
+    }
+
+    var activeEmbeddingDimension: Int {
+        embeddingExtractor.embeddingDimension
+    }
 
     init() {
         Task {
@@ -66,22 +70,27 @@ class FaceRecognitionManager: ObservableObject {
         }
     }
 
-    /// .mlmodel 파일이 번들에 있는지 확인
     private func checkModelAvailability() async {
         try? await Task.sleep(for: .milliseconds(500))
 
         if embeddingExtractor.isModelLoaded {
             modelStatus = .loaded
-            DebugLogger.shared.log(category: .faceAuth, message: "AuraFace 모델 로드 성공", details: "출력 차원: \(embeddingExtractor.embeddingDimension)")
+            DebugLogger.shared.log(
+                category: .faceAuth,
+                message: "얼굴 모델 로드 성공",
+                details: "\(activeModelName), 출력 차원: \(activeEmbeddingDimension)"
+            )
         } else {
             modelStatus = .mockMode
-            DebugLogger.shared.log(level: .warning, category: .faceAuth, message: "AuraFace 모델 없음 — 목업 모드로 동작")
+            DebugLogger.shared.log(
+                level: .warning,
+                category: .faceAuth,
+                message: "얼굴 모델 없음",
+                details: "출석 인식은 비활성화됩니다."
+            )
         }
     }
 
-    // MARK: - 얼굴 처리 파이프라인
-
-    /// Vision에서 얼굴 감지 시 호출
     func processFaceObservations(_ observations: [VNFaceObservation], pixelBuffer: CVPixelBuffer? = nil) {
         let now = Date()
         guard now.timeIntervalSince(lastProcessTime) >= processInterval else { return }
@@ -94,69 +103,77 @@ class FaceRecognitionManager: ObservableObject {
 
         if isFaceDetected {
             if !wasDetected {
-                DebugLogger.shared.log(category: .faceAuth, message: "얼굴 감지 시작: \(observations.count)명", details: "임계값: \(Int(similarityThreshold * 100))%, 등록 사원: \(EmployeeStore.shared.employees.count)명")
+                DebugLogger.shared.log(
+                    category: .faceAuth,
+                    message: "얼굴 감지 시작: \(observations.count)명",
+                    details: "임계값: \(Int(similarityThreshold * 100))%, 등록 사원: \(EmployeeStore.shared.employees.count)명"
+                )
             }
             Task {
                 await recognizeFace()
             }
         } else {
             if wasDetected {
-                DebugLogger.shared.log(category: .faceAuth, message: "얼굴 감지 해제 — 카메라에서 사라짐")
+                DebugLogger.shared.log(category: .faceAuth, message: "얼굴 감지 해제")
             }
+            resetMatchStability()
             detectedMatches = []
         }
     }
 
-    /// 얼굴 인식 (Core ML 또는 목업)
     private func recognizeFace() async {
         isProcessing = true
         defer { isProcessing = false }
 
-        var currentVector: [Float]?
-
-        // 실제 모델이 로드되었고 픽셀버퍼가 있는 경우
-        if modelStatus == .loaded,
-           let pixelBuffer = currentPixelBuffer,
-           let firstFace = faceObservations.first {
-
-            currentVector = await embeddingExtractor.extractEmbedding(
-                from: pixelBuffer,
-                boundingBox: firstFace.boundingBox
-            )
-
-            if let vector = currentVector {
-                DebugLogger.shared.log(category: .faceAuth, message: "Core ML 임베딩 추출 성공: \(vector.count)차원")
-            }
+        guard modelStatus == .loaded,
+              let pixelBuffer = currentPixelBuffer,
+              let firstFace = faceObservations.first else {
+            resetMatchStability()
+            detectedMatches = []
+            return
         }
 
-        // 모델이 없거나 추출 실패 시 목업 벡터 사용
-        if currentVector == nil {
-            currentVector = generateRandomVector()
-            DebugLogger.shared.log(level: .warning, category: .faceAuth, message: "목업 벡터 사용 (모델 미로드 또는 추출 실패)")
+        guard let currentVector = await embeddingExtractor.extractEmbedding(
+            from: pixelBuffer,
+            boundingBox: firstFace.boundingBox
+        ) else {
+            detectedMatches = []
+            DebugLogger.shared.log(level: .warning, category: .faceAuth, message: "임베딩 추출 실패로 인식 중단")
+            return
         }
 
-        guard let vector = currentVector else { return }
-
-        // 등록된 사원들과 유사도 비교
         let employees = EmployeeStore.shared.employees
+        let compatibleEmployees = employees.filter {
+            $0.isCompatible(withModel: embeddingExtractor.activeModelName, dimension: activeEmbeddingDimension)
+        }
 
-        let allResults = employees.map { employee in
-            let similarity = bestSimilarity(current: vector, employee: employee)
-            return FaceMatch(employee: employee, confidence: similarity)
+        guard !compatibleEmployees.isEmpty else {
+            detectedMatches = []
+            DebugLogger.shared.log(
+                level: .warning,
+                category: .faceAuth,
+                message: "호환되는 등록 얼굴이 없음",
+                details: "현재 모델: \(activeModelName), 차원: \(activeEmbeddingDimension), 전체 사원: \(employees.count)명"
+            )
+            return
+        }
+
+        let incompatibleCount = employees.count - compatibleEmployees.count
+        if incompatibleCount > 0 {
+            DebugLogger.shared.log(
+                level: .warning,
+                category: .faceAuth,
+                message: "현재 모델과 다른 등록 얼굴이 있음",
+                details: "호환: \(compatibleEmployees.count)명, 재등록 필요: \(incompatibleCount)명"
+            )
+        }
+
+        let allResults = compatibleEmployees.map { employee in
+            FaceMatch(employee: employee, confidence: consensusSimilarity(current: currentVector, employee: employee))
         }
         .sorted { $0.confidence > $1.confidence }
 
-        let matches = allResults
-            .prefix(maxMatches)
-            .filter { $0.confidence > similarityThreshold }
-
-        detectedMatches = Array(matches)
-
-        // 임계값에 의해 필터링된 결과가 있으면 로그
-        let filteredOut = allResults.prefix(maxMatches).filter { $0.confidence <= similarityThreshold }
-        if !filteredOut.isEmpty && matches.isEmpty {
-            DebugLogger.shared.log(category: .faceAuth, message: "매칭 결과 없음 (임계값 미달)", details: "최고 유사도: \(Int((allResults.first?.confidence ?? 0) * 100))%, 임계값: \(Int(similarityThreshold * 100))%")
-        }
+        detectedMatches = acceptedMatches(from: allResults)
 
         if let top = detectedMatches.first {
             DebugLogger.shared.log(
@@ -164,54 +181,55 @@ class FaceRecognitionManager: ObservableObject {
                 message: "얼굴 매칭: \(top.employee.name) \(top.confidencePercent)%",
                 details: detectedMatches.map { "\($0.employee.name): \($0.confidencePercent)%" }.joined(separator: ", ")
             )
+        } else if let best = allResults.first {
+            DebugLogger.shared.log(
+                category: .faceAuth,
+                message: "매칭 결과 없음",
+                details: "최고 유사도: \(best.confidencePercent)%, 임계값: \(Int(similarityThreshold * 100))%"
+            )
         }
     }
 
-    /// 등록된 멀티 벡터 중 가장 높은 유사도를 반환
-    private func bestSimilarity(current: [Float], employee: Employee) -> Float {
-        let adjustedCurrent = adjustVectorDimension(current, to: employee.faceVector.count)
-
-        // 평균 벡터와의 유사도
-        var best = cosineSimilarity(adjustedCurrent, employee.faceVector)
-
-        // 각 각도별 벡터와도 비교하여 최대값 사용
-        for vec in employee.faceVectors {
-            let adjustedVec = adjustVectorDimension(vec, to: adjustedCurrent.count)
-            let sim = cosineSimilarity(adjustedCurrent, adjustedVec)
-            if sim > best {
-                best = sim
-            }
+    private func consensusSimilarity(current: [Float], employee: Employee) -> Float {
+        guard employee.isCompatible(withModel: embeddingExtractor.activeModelName, dimension: current.count) else {
+            DebugLogger.shared.log(
+                level: .warning,
+                category: .faceAuth,
+                message: "벡터 차원 또는 모델 불일치: \(employee.name)",
+                details: "현재 \(activeModelName) \(current.count)차원 vs 등록 \(employee.embeddingModel) \(employee.faceVector.count)차원"
+            )
+            return 0
         }
-        return best
+
+        let prototypeSimilarity = cosineSimilarity(current, employee.faceVector)
+        let sampleSimilarities = employee.faceVectors
+            .filter { $0.count == current.count }
+            .map { cosineSimilarity(current, $0) }
+            .sorted(by: >)
+
+        guard !sampleSimilarities.isEmpty else {
+            return prototypeSimilarity
+        }
+
+        let topSampleAverage = average(sampleSimilarities.prefix(3))
+        let consistentSampleAverage = average(sampleSimilarities.prefix(5))
+        let consensusScore =
+            (prototypeSimilarity * 0.55) +
+            (topSampleAverage * 0.30) +
+            (consistentSampleAverage * 0.15)
+
+        return min(max(consensusScore, 0), 1)
     }
 
-    /// 벡터 차원 조정
-    private func adjustVectorDimension(_ vector: [Float], to targetDim: Int) -> [Float] {
-        if vector.count == targetDim {
-            return vector
-        } else if vector.count < targetDim {
-            return vector + [Float](repeating: 0, count: targetDim - vector.count)
-        } else {
-            return Array(vector.prefix(targetDim))
-        }
-    }
-
-    // MARK: - 출석 체크
-
-    /// 출석 체크 (선택된 사원) + 햅틱 피드백
     func checkAttendance(for employee: Employee, type: AttendanceType = .checkIn) {
         let match = detectedMatches.first { $0.employee.id == employee.id }
         let confidence = match?.confidence ?? 0
-
-        // 이미 오늘 출근했는지 확인
         let alreadyCheckedIn = AttendanceStore.shared.hasCheckedInToday(employeeId: employee.id)
 
         if !alreadyCheckedIn || type == .checkOut {
-            // 출석 기록 저장
             AttendanceStore.shared.record(employee: employee, confidence: confidence, type: type)
         }
 
-        // 결과 업데이트
         lastAttendanceResult = AttendanceResult(
             employee: employee,
             confidence: confidence,
@@ -220,26 +238,78 @@ class FaceRecognitionManager: ObservableObject {
             timestamp: Date()
         )
 
-        // 햅틱 피드백 (설정에서 조절)
         let enableHaptic = UserDefaults.standard.object(forKey: "enable_haptic") as? Bool ?? true
         if alreadyCheckedIn && type == .checkIn {
-            if enableHaptic { UINotificationFeedbackGenerator().notificationOccurred(.warning) }
-            DebugLogger.shared.log(level: .warning, category: .faceAuth, message: "\(employee.name) 이미 출근 체크됨 (중복)", details: "유사도: \(Int(confidence * 100))%")
+            if enableHaptic {
+                UINotificationFeedbackGenerator().notificationOccurred(.warning)
+            }
+            DebugLogger.shared.log(level: .warning, category: .faceAuth, message: "\(employee.name) 중복 출근 체크", details: "유사도 \(Int(confidence * 100))%")
         } else {
-            if enableHaptic { UINotificationFeedbackGenerator().notificationOccurred(.success) }
-            DebugLogger.shared.log(category: .faceAuth, message: "\(type.rawValue) 처리 완료: \(employee.name)", details: "부서: \(employee.department), 유사도: \(Int(confidence * 100))%")
+            if enableHaptic {
+                UINotificationFeedbackGenerator().notificationOccurred(.success)
+            }
+            DebugLogger.shared.log(category: .faceAuth, message: "\(type.rawValue) 처리 완료: \(employee.name)", details: "부서 \(employee.department), 유사도 \(Int(confidence * 100))%")
         }
     }
 
-    // MARK: - 벡터 유사도 계산 (Accelerate Framework)
+    private func acceptedMatches(from results: [FaceMatch]) -> [FaceMatch] {
+        guard let top = results.first else {
+            resetMatchStability()
+            return []
+        }
 
-    /// 랜덤 벡터 생성 - 목업 모드에서 사용
-    private func generateRandomVector() -> [Float] {
-        let dim = embeddingExtractor.embeddingDimension
-        return (0..<dim).map { _ in Float.random(in: -1...1) }
+        let secondScore = results.dropFirst().first?.confidence ?? 0
+        let scoreGap = top.confidence - secondScore
+
+        guard top.confidence > similarityThreshold else {
+            resetMatchStability()
+            return []
+        }
+
+        guard scoreGap >= minimumTopGap || secondScore == 0 else {
+            resetMatchStability(keeping: top.employee.id)
+            return []
+        }
+
+        updateMatchStability(with: top.employee.id)
+        guard stableTopFrameCount >= requiredStableFrames else {
+            return []
+        }
+
+        return Array(
+            results
+                .prefix(maxMatches)
+                .filter { $0.confidence > similarityThreshold }
+        )
     }
 
-    /// 코사인 유사도 (Accelerate 사용으로 고속 계산)
+    private func updateMatchStability(with employeeID: String) {
+        if lastTopEmployeeID == employeeID {
+            stableTopFrameCount += 1
+        } else {
+            lastTopEmployeeID = employeeID
+            stableTopFrameCount = 1
+        }
+    }
+
+    private func resetMatchStability(keeping employeeID: String? = nil) {
+        lastTopEmployeeID = employeeID
+        stableTopFrameCount = 0
+    }
+
+    private func average<S: Sequence>(_ values: S) -> Float where S.Element == Float {
+        var total: Float = 0
+        var count: Float = 0
+
+        for value in values {
+            total += value
+            count += 1
+        }
+
+        guard count > 0 else { return 0 }
+        return total / count
+    }
+
     private func cosineSimilarity(_ a: [Float], _ b: [Float]) -> Float {
         guard a.count == b.count, !a.isEmpty else { return 0 }
 
@@ -254,7 +324,6 @@ class FaceRecognitionManager: ObservableObject {
         let denominator = sqrt(normA) * sqrt(normB)
         guard denominator > 0 else { return 0 }
 
-        let similarity = dot / denominator
-        return max(0, (similarity + 1) / 2)  // -1~1 → 0~1 변환
+        return max(0, dot / denominator)
     }
 }

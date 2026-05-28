@@ -256,6 +256,10 @@ struct EmployeeRow: View {
                             .font(.caption2)
                             .foregroundStyle(.blue)
                     }
+
+                    Label(employee.embeddingModel, systemImage: "cpu")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
                 }
             }
 
@@ -294,6 +298,7 @@ struct EmployeeDetailView: View {
     @State private var showFaceReRegister = false
     @State private var newFaceVector: [Float]?
     @State private var newFaceVectors: [[Float]] = []
+    @State private var newFaceModelName: String?
     @State private var faceReRegistered = false
 
     init(employee: Employee) {
@@ -341,6 +346,9 @@ struct EmployeeDetailView: View {
                     }
                     LabeledContent("벡터 차원") {
                         Text("\(faceReRegistered ? (newFaceVectors.first?.count ?? employee.faceVector.count) : employee.faceVector.count)차원")
+                    }
+                    LabeledContent("임베딩 모델") {
+                        Text(faceReRegistered ? (newFaceModelName ?? employee.embeddingModel) : employee.embeddingModel)
                     }
                 }
 
@@ -434,6 +442,7 @@ struct EmployeeDetailView: View {
                             faceReRegistered = false
                             newFaceVector = nil
                             newFaceVectors = []
+                            newFaceModelName = nil
                             isEditing = false
                         }
                     }
@@ -459,11 +468,12 @@ struct EmployeeDetailView: View {
                 }
             }
             .fullScreenCover(isPresented: $showFaceReRegister) {
-                FaceRegisterCameraView { vector, vectors in
+                FaceRegisterCameraView { vector, vectors, modelName in
                     newFaceVector = vector
                     newFaceVectors = vectors
+                    newFaceModelName = modelName
                     faceReRegistered = true
-                    DebugLogger.shared.log(category: .faceAuth, message: "얼굴 재등록 완료: \(employee.name)", details: "\(vectors.count)개 각도, \(vector.count)차원")
+                    DebugLogger.shared.log(category: .faceAuth, message: "얼굴 재등록 완료: \(employee.name)", details: "\(vectors.count)개 각도, \(vector.count)차원, 모델: \(modelName)")
                 }
             }
             .alert("사원 삭제", isPresented: $showDeleteConfirm) {
@@ -551,6 +561,7 @@ struct EmployeeDetailView: View {
         if faceReRegistered, let vector = newFaceVector {
             updated.faceVector = vector
             updated.faceVectors = newFaceVectors
+            updated.embeddingModel = newFaceModelName ?? employee.embeddingModel
         }
 
         employeeStore.update(updated)

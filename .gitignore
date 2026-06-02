@@ -1,0 +1,10 @@
+
+# Xcode build
+DerivedData/
+*.xcuserstate
+xcuserdata/
+*.pbxuser
+Pods/
+*.xcworkspace
+build/
+.DS_Store

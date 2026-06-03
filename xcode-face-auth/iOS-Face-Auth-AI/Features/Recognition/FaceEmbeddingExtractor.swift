@@ -11,8 +11,7 @@ import Vision
 import CoreImage
 import ImageIO
 
-/// Extracts face embeddings from the bundled Core ML model.
-/// AuraFace is preferred, with MobileFaceNet as a fallback.
+/// Extracts face embeddings from the bundled AuraFace Core ML model (Apache-2.0).
 @MainActor
 class FaceEmbeddingExtractor {
 
@@ -24,7 +23,6 @@ class FaceEmbeddingExtractor {
 
     static let supportedModels: [SupportedModel] = [
         SupportedModel(resourceName: "AuraFace", displayName: "AuraFace", defaultEmbeddingDimension: 512),
-        SupportedModel(resourceName: "MobileFaceNet", displayName: "MobileFaceNet", defaultEmbeddingDimension: 128)
     ]
 
     enum ModelLoadingState {

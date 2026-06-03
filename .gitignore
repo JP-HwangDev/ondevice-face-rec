@@ -8,3 +8,4 @@ Pods/
 *.xcworkspace
 build/
 .DS_Store
+Podfile.lock

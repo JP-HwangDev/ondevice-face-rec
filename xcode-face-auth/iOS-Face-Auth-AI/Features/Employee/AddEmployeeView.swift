@@ -20,6 +20,7 @@ struct AddEmployeeView: View {
     @State private var customDepartment = ""
 
     @State private var faceRegistered = false
+    @State private var showConsent = false
     @State private var showCamera = false
     @State private var capturedVector: [Float]? = nil
     @State private var capturedVectors: [[Float]] = []
@@ -95,7 +96,7 @@ struct AddEmployeeView: View {
                             }
                             Spacer()
                             Button("다시 등록") {
-                                showCamera = true
+                                showConsent = true
                             }
                             .font(.caption)
                             .foregroundStyle(.blue)
@@ -103,7 +104,7 @@ struct AddEmployeeView: View {
                         .padding(.vertical, 4)
                     } else {
                         Button {
-                            showCamera = true
+                            showConsent = true
                         } label: {
                             HStack(spacing: 12) {
                                 ZStack {
@@ -180,6 +181,14 @@ struct AddEmployeeView: View {
                     }
                     .fontWeight(.semibold)
                     .disabled(!canSave)
+                }
+            }
+            .sheet(isPresented: $showConsent) {
+                BiometricConsentView {
+                    showConsent = false
+                    showCamera = true
+                } onDecline: {
+                    showConsent = false
                 }
             }
             .fullScreenCover(isPresented: $showCamera) {
@@ -503,7 +512,7 @@ struct FaceRegisterCameraView: View {
                 Text("임베딩 모델 없음")
                     .font(.headline)
                     .foregroundStyle(.white)
-                Text("AuraFace.mlmodel 또는 MobileFaceNet.mlmodel을 번들에 추가한 뒤 다시 시도해주세요.")
+                Text("AuraFace.mlmodel을 번들에 추가한 뒤 다시 시도해주세요.")
                     .font(.subheadline)
                     .foregroundStyle(.white.opacity(0.8))
                     .multilineTextAlignment(.center)

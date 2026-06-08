@@ -1,0 +1,5 @@
+platform :ios, '16.0'
+
+target 'FaceDetecting' do
+  use_frameworks!
+end

@@ -1,0 +1,13 @@
+.claude/
+.venv/
+
+# 모델 파일 (GitHub 100MB 제한 초과)
+*.mlmodel
+*.onnx
+*.ckpt
+*.pt
+models/
+pretrained/
+
+!AuraFace.mlmodel
+MobileFaceNet.mlmodel

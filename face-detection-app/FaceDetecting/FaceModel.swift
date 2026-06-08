@@ -3,11 +3,6 @@ import Combine
 import SwiftUI
 import SQLite3
 
-enum UserType: String, Codable {
-    case employee = "EMPLOYEE"
-    case visitor = "VISITOR"
-}
-
 struct FaceUser: Identifiable, Codable {
     let id: String
     let name: String
@@ -15,18 +10,14 @@ struct FaceUser: Identifiable, Codable {
     var faceSignatures: [[Float]]
     var registeredAt: Date
     var lastSeenAt: Date?
-    var userType: UserType
-    var visitPurpose: String?
 
-    init(id: String, name: String, department: String, faceSignatures: [[Float]], registeredAt: Date = Date(), lastSeenAt: Date? = nil, userType: UserType = .employee, visitPurpose: String? = nil) {
+    init(id: String, name: String, department: String, faceSignatures: [[Float]], registeredAt: Date = Date(), lastSeenAt: Date? = nil) {
         self.id = id
         self.name = name
         self.department = department
         self.faceSignatures = faceSignatures
         self.registeredAt = registeredAt
         self.lastSeenAt = lastSeenAt
-        self.userType = userType
-        self.visitPurpose = visitPurpose
     }
 
     var initials: String {
@@ -174,9 +165,6 @@ class FaceVectorStore: ObservableObject {
         let addType = "ALTER TABLE AttendanceLogs ADD COLUMN type TEXT DEFAULT 'checkIn';"
         execute(sql: addType)
 
-        // New migrations for UserType and VisitPurpose
-        execute(sql: "ALTER TABLE Users ADD COLUMN user_type TEXT DEFAULT 'EMPLOYEE';")
-        execute(sql: "ALTER TABLE Users ADD COLUMN visit_purpose TEXT;")
     }
 
     // MARK: - User Management
@@ -205,18 +193,12 @@ class FaceVectorStore: ObservableObject {
         sqlite3_finalize(stmt)
 
         if !existingUser {
-            let insertUser = "INSERT INTO Users (id, name, department, registered_at, user_type, visit_purpose) VALUES (?, ?, ?, ?, ?, ?);"
+            let insertUser = "INSERT INTO Users (id, name, department, registered_at) VALUES (?, ?, ?, ?);"
             if sqlite3_prepare_v2(db, insertUser, -1, &stmt, nil) == SQLITE_OK {
                 sqlite3_bind_text(stmt, 1, (userId as NSString).utf8String, -1, nil)
                 sqlite3_bind_text(stmt, 2, (user.name as NSString).utf8String, -1, nil)
                 sqlite3_bind_text(stmt, 3, (user.department as NSString).utf8String, -1, nil)
                 sqlite3_bind_double(stmt, 4, user.registeredAt.timeIntervalSince1970)
-                sqlite3_bind_text(stmt, 5, (user.userType.rawValue as NSString).utf8String, -1, nil)
-                if let purpose = user.visitPurpose {
-                    sqlite3_bind_text(stmt, 6, (purpose as NSString).utf8String, -1, nil)
-                } else {
-                    sqlite3_bind_null(stmt, 6)
-                }
                 sqlite3_step(stmt)
             } else {
                 print("Insert User Error: \(String(cString: sqlite3_errmsg(db)))")
@@ -292,20 +274,6 @@ class FaceVectorStore: ObservableObject {
             if sqlite3_prepare_v2(db, deleteSql, -1, &stmt, nil) == SQLITE_OK {
                 sqlite3_bind_text(stmt, 1, (userId as NSString).utf8String, -1, nil)
                 sqlite3_bind_int(stmt, 2, Int32(deleteCount))
-                sqlite3_step(stmt)
-            }
-            sqlite3_finalize(stmt)
-        }
-    }
-
-    func updateLastSeen(userName: String) {
-        dbQueue.async { [weak self] in
-            guard let self = self else { return }
-            let sql = "UPDATE Users SET last_seen_at = ? WHERE name = ?;"
-            var stmt: OpaquePointer?
-            if sqlite3_prepare_v2(self.db, sql, -1, &stmt, nil) == SQLITE_OK {
-                sqlite3_bind_double(stmt, 1, Date().timeIntervalSince1970)
-                sqlite3_bind_text(stmt, 2, (userName as NSString).utf8String, -1, nil)
                 sqlite3_step(stmt)
             }
             sqlite3_finalize(stmt)
@@ -575,53 +543,6 @@ class FaceVectorStore: ObservableObject {
         }
     }
 
-    func getAttendanceHistory(days: Int = 30) -> [AttendanceEntry] {
-        var entries: [AttendanceEntry] = []
-
-        let sql = """
-        SELECT id, user_no, user_name, date, check_in_time, check_out_time
-        FROM DailyAttendance
-        ORDER BY date DESC, check_in_time DESC
-        LIMIT ?;
-        """
-        var stmt: OpaquePointer?
-
-        if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
-            sqlite3_bind_int(stmt, 1, Int32(days * 10)) // Approximate limit
-            while sqlite3_step(stmt) == SQLITE_ROW {
-                let id = String(cString: sqlite3_column_text(stmt, 0))
-                let userNo = String(cString: sqlite3_column_text(stmt, 1))
-                let userName = String(cString: sqlite3_column_text(stmt, 2))
-                let dateStr = String(cString: sqlite3_column_text(stmt, 3))
-
-                let formatter = DateFormatter()
-                formatter.dateFormat = "yyyy-MM-dd"
-                let date = formatter.date(from: dateStr) ?? Date()
-
-                var checkInTime: Date? = nil
-                var checkOutTime: Date? = nil
-
-                if sqlite3_column_type(stmt, 4) != SQLITE_NULL {
-                    checkInTime = Date(timeIntervalSince1970: sqlite3_column_double(stmt, 4))
-                }
-                if sqlite3_column_type(stmt, 5) != SQLITE_NULL {
-                    checkOutTime = Date(timeIntervalSince1970: sqlite3_column_double(stmt, 5))
-                }
-
-                entries.append(AttendanceEntry(
-                    id: id,
-                    userNo: userNo,
-                    userName: userName,
-                    date: date,
-                    checkInTime: checkInTime,
-                    checkOutTime: checkOutTime
-                ))
-            }
-        }
-        sqlite3_finalize(stmt)
-        return entries
-    }
-
     // MARK: - Backup & Restore
 
     var backupURL: URL {
@@ -738,22 +659,4 @@ class FaceVectorStore: ObservableObject {
         }
     }
 
-    // MARK: - Debugging
-    private func logError(_ message: String) {
-        print("[FaceVectorStore Error] \(message)")
-        if let db = db {
-            let errmsg = String(cString: sqlite3_errmsg(db))
-            print("SQLite Error: \(errmsg)")
-        }
-    }
-}
-
-extension FaceVectorStore {
-     // Override loadUsers to include debug logging (replacing the private one for clarity in diff, 
-     // but since I can't replace just the method easily if it's in the middle, I'll rely on the user instructions to apply logic.
-     // Actually, I will modify `loadUsers` in the `Loading Data` section in a separate replace call if needed, 
-     // but the instruction says to modify `execute` and add logging.
-     // Let's stick to the instruction plan: updating `execute` is done above.
-     // I will also update `loadUsers` and `saveUserSync` in separate calls or one big call if possible.
-     // Since `FaceModel.swift` is small enough, I'll replace the `loadUsers` method block.)
 }

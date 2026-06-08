@@ -70,12 +70,6 @@ class APIService: ObservableObject {
         employees.first { $0.userName == name }
     }
 
-    // MARK: - Visitor Management
-
-    func reportVisitor(name: String, purpose: String) async throws {
-        print("Visitor Arrived: \(name), Purpose: \(purpose)")
-        try await Task.sleep(nanoseconds: 1 * 1_000_000_000)
-    }
 }
 
 enum APIError: Error, LocalizedError {

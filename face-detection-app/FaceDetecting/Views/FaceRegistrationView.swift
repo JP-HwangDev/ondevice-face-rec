@@ -306,24 +306,3 @@ struct FaceRegistrationView: View {
     }
 }
 
-// MARK: - Quality Badge (standalone reuse)
-struct QualityBadge: View {
-    let icon: String
-    let text: String
-    let isActive: Bool
-
-    var body: some View {
-        HStack(spacing: 5) {
-            Image(systemName: isActive ? icon : "checkmark.circle.fill")
-                .font(.caption2)
-                .foregroundColor(isActive ? .orange : .green)
-            Text(isActive ? text : "OK")
-                .font(.caption2)
-                .foregroundColor(isActive ? .orange : .green)
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 5)
-        .background(Color.black.opacity(0.4))
-        .clipShape(Capsule())
-    }
-}

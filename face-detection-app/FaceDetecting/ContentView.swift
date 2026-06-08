@@ -1,6 +1,5 @@
 import SwiftUI
 import AVFoundation
-import AudioToolbox
 import UniformTypeIdentifiers
 import Combine
 import Charts
@@ -28,7 +27,6 @@ struct ContentView: View {
 
     @State private var isScanning = false
     @State private var currentTime = Date()
-    @State private var showingResetConfirm = false
 
     private let settingsPassword = "20170201"
 
@@ -283,44 +281,6 @@ struct ContentView: View {
         }
     }
 
-    // MARK: - Face Overlay Layer
-    private var faceOverlayLayer: some View {
-        Canvas { context, size in
-            for face in viewModel.detectedFaces {
-                let isRecognized = face.name != "未認証" && !face.name.isEmpty
-                let statusColor = getStatusColor(for: face.attendanceStatus)
-                let color: Color = isRecognized ? statusColor : .cyan
-
-                // Draw landmarks
-                for (_, points) in face.landmarks {
-                    var path = Path()
-                    let converted = points.map { convertPoint($0, to: size) }
-                    if let first = converted.first {
-                        path.move(to: first)
-                        for i in 1..<converted.count { path.addLine(to: converted[i]) }
-                    }
-                    context.stroke(path, with: .color(color.opacity(0.6)), lineWidth: 1.5)
-                }
-
-                // Draw face box corners with glow for recognized faces
-                let rect = convertRect(face.rect, to: size)
-                if isRecognized {
-                    // Glow effect
-                    drawModernCorners(context: context, rect: rect.insetBy(dx: -2, dy: -2), color: color.opacity(0.3))
-                }
-                drawModernCorners(context: context, rect: rect, color: color)
-
-                // Draw name label
-                if !face.name.isEmpty {
-                    drawNameLabel(context: context, face: face, rect: rect, size: size, color: color)
-                }
-                
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .ignoresSafeArea()
-    }
-
     private func getStatusColor(for status: UserAttendanceStatus) -> Color {
         switch status {
         case .notCheckedIn: return .orange
@@ -443,53 +403,6 @@ struct ContentView: View {
                 EmptyView()
             }
         }
-    }
-
-    // MARK: - Confidence Gauge
-    private func confidenceGauge(similarity: Float) -> some View {
-        HStack(spacing: 12) {
-            // Circular gauge
-            ZStack {
-                Circle()
-                    .stroke(Color.white.opacity(0.1), lineWidth: 4)
-                    .frame(width: 36, height: 36)
-                Circle()
-                    .trim(from: 0, to: CGFloat(similarity))
-                    .stroke(
-                        gaugeGradient(for: similarity),
-                        style: StrokeStyle(lineWidth: 4, lineCap: .round)
-                    )
-                    .frame(width: 36, height: 36)
-                    .rotationEffect(.degrees(-90))
-                
-                Text("\(Int(similarity * 100))")
-                    .font(.system(size: 10, weight: .heavy, design: .rounded))
-                    .foregroundColor(.white)
-            }
-            
-            VStack(alignment: .leading, spacing: 2) {
-                Text("認識信頼度")
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundColor(.white.opacity(0.5))
-                
-                // Bar gauge
-                GeometryReader { geo in
-                    ZStack(alignment: .leading) {
-                        Capsule()
-                            .fill(Color.white.opacity(0.1))
-                        Capsule()
-                            .fill(gaugeGradient(for: similarity))
-                            .frame(width: geo.size.width * CGFloat(similarity))
-                    }
-                }
-                .frame(height: 6)
-                .frame(width: 120)
-            }
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
-        .background(.ultraThinMaterial)
-        .cornerRadius(20)
     }
 
     private func gaugeGradient(for similarity: Float) -> LinearGradient {
@@ -685,26 +598,6 @@ struct ContentView: View {
         }
     }
 
-    // Placeholder for old actionButtonsView — now unused
-    private func actionButtonsView(for candidate: FaceRecognitionViewModel.Candidate) -> some View {
-        EmptyView()
-    }
-
-    private var statusMessageView: some View {
-        HStack(spacing: 12) {
-            Image(systemName: "faceid")
-                .font(.title2)
-            Text(viewModel.authStatus)
-                .font(.subheadline.bold())
-        }
-        .foregroundColor(.white)
-        .padding(.horizontal, 30)
-        .padding(.vertical, 18)
-        .background(.ultraThinMaterial)
-        .cornerRadius(25)
-        .padding(.bottom, 50)
-    }
-
     // MARK: - Success Toast
     private var successOverlayView: some View {
         VStack {
@@ -755,57 +648,6 @@ struct ContentView: View {
             DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
                 withAnimation(.easeOut) { showingSuccessOverlay = false }
             }
-        }
-    }
-
-    // MARK: - Floating Register Button
-    var floatingRegisterButton: some View {
-        VStack {
-            Spacer()
-            HStack {
-                // DB Reset Button
-                Button {
-                    showingResetConfirm = true
-                } label: {
-                    Image(systemName: "trash.fill")
-                        .font(.system(size: 18, weight: .bold))
-                        .foregroundColor(.white)
-                        .frame(width: 50, height: 50)
-                        .background(
-                            LinearGradient(colors: [.red, .orange], startPoint: .topLeading, endPoint: .bottomTrailing)
-                        )
-                        .clipShape(Circle())
-                        .shadow(color: .red.opacity(0.4), radius: 8, y: 4)
-                }
-                .padding(.leading, 25)
-                
-                Spacer()
-                
-                // Register Button
-                Button {
-                    showingFaceRegistration = true
-                } label: {
-                    Image(systemName: "person.badge.plus")
-                        .font(.system(size: 22, weight: .bold))
-                        .foregroundColor(.white)
-                        .frame(width: 60, height: 60)
-                        .background(
-                            LinearGradient(colors: [.blue, .purple], startPoint: .topLeading, endPoint: .bottomTrailing)
-                        )
-                        .clipShape(Circle())
-                        .shadow(color: .blue.opacity(0.5), radius: 10, y: 5)
-                }
-                .padding(.trailing, 25)
-            }
-            .padding(.bottom, 100)
-        }
-        .alert("データ初期化", isPresented: $showingResetConfirm) {
-            Button("全削除", role: .destructive) {
-                viewModel.store.resetAllData()
-            }
-            Button("キャンセル", role: .cancel) {}
-        } message: {
-            Text("全ての登録データと出退勤記録を削除しますか？\nこの操作は元に戻せません。")
         }
     }
 
@@ -871,96 +713,6 @@ struct ContentView: View {
     }
 }
 
-// MARK: - Supporting Views
-
-struct EnhancedCandidateCard: View {
-    let candidate: FaceRecognitionViewModel.Candidate
-    let isSelected: Bool
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: {
-            let impact = UIImpactFeedbackGenerator(style: .medium)
-            impact.impactOccurred()
-            action()
-        }) {
-            VStack(spacing: 12) {
-                ZStack {
-                    Circle()
-                        .fill(
-                            LinearGradient(
-                                colors: statusColors,
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
-                        )
-                        .frame(width: 65, height: 65)
-
-                    Text(String(candidate.name.prefix(1)))
-                        .font(.title)
-                        .bold()
-                        .foregroundColor(.white)
-
-                    // Status indicator
-                    Circle()
-                        .fill(statusIndicatorColor)
-                        .frame(width: 16, height: 16)
-                        .overlay(
-                            Circle().stroke(.white, lineWidth: 2)
-                        )
-                        .offset(x: 22, y: 22)
-                }
-
-                VStack(spacing: 4) {
-                    Text(candidate.name)
-                        .font(.system(size: 14, weight: .bold))
-                        .foregroundColor(.white)
-                        .lineLimit(1)
-
-                    HStack(spacing: 4) {
-                        Text("\(Int(candidate.similarity * 100))%")
-                            .font(.system(size: 11, weight: .medium, design: .monospaced))
-                            .foregroundColor(.secondary)
-
-                        Text("•")
-                            .foregroundColor(.secondary)
-
-                        Text(candidate.status.rawValue)
-                            .font(.system(size: 10, weight: .medium))
-                            .foregroundColor(statusIndicatorColor)
-                    }
-                }
-            }
-            .frame(width: 110, height: 140)
-            .background(
-                RoundedRectangle(cornerRadius: 20)
-                    .fill(Color.white.opacity(isSelected ? 0.15 : 0.05))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 20)
-                            .stroke(isSelected ? statusIndicatorColor : Color.white.opacity(0.1), lineWidth: isSelected ? 2 : 1)
-                    )
-            )
-        }
-        .buttonStyle(ScaleButtonStyle())
-    }
-
-    private var statusColors: [Color] {
-        switch candidate.status {
-        case .notCheckedIn: return [.orange.opacity(0.6), .yellow.opacity(0.3)]
-        case .checkedIn: return [.green.opacity(0.6), .cyan.opacity(0.3)]
-        case .checkedOut: return [.blue.opacity(0.6), .purple.opacity(0.3)]
-        }
-    }
-
-    private var statusIndicatorColor: Color {
-        switch candidate.status {
-        case .notCheckedIn: return .orange
-        case .checkedIn: return .green
-        case .checkedOut: return .blue
-        }
-    }
-}
-
 // MARK: - Stats View
 struct StatsView: View {
     @ObservedObject var viewModel: FaceRecognitionViewModel
@@ -1017,124 +769,6 @@ struct StatsView: View {
             .toolbar {
                 Button("閉じる") { dismiss() }
             }
-        }
-    }
-}
-
-// MARK: - Enhanced User List View
-struct EnhancedUserListView: View {
-    @ObservedObject var store: FaceVectorStore
-    @Environment(\.dismiss) var dismiss
-    @State private var searchText = ""
-
-    var filteredUsers: [FaceUser] {
-        if searchText.isEmpty {
-            return store.users
-        }
-        return store.users.filter { $0.name.localizedCaseInsensitiveContains(searchText) }
-    }
-
-    var body: some View {
-        NavigationStack {
-            List {
-                ForEach(filteredUsers) { user in
-                    UserRowView(user: user, status: store.getTodayStatus(for: user.name))
-                }
-                .onDelete(perform: deleteUsers)
-            }
-            .searchable(text: $searchText, prompt: "ユーザーを検索")
-            .navigationTitle("登録ユーザー")
-            .navigationBarTitleDisplayMode(.large)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Text("\(store.users.count)名")
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("閉じる") { dismiss() }
-                }
-            }
-        }
-    }
-
-    private func deleteUsers(at offsets: IndexSet) {
-        let usersToDelete = offsets.map { filteredUsers[$0] }
-        for user in usersToDelete {
-            if let index = store.users.firstIndex(where: { $0.id == user.id }) {
-                store.deleteUser(at: IndexSet(integer: index))
-            }
-        }
-    }
-}
-
-struct UserRowView: View {
-    let user: FaceUser
-    let status: UserAttendanceStatus
-
-    var body: some View {
-        HStack(spacing: 15) {
-            ZStack {
-                Circle()
-                    .fill(
-                        LinearGradient(
-                            colors: [.blue.opacity(0.5), .purple.opacity(0.3)],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-                    .frame(width: 50, height: 50)
-
-                Text(user.initials)
-                    .font(.headline)
-                    .foregroundColor(.white)
-            }
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text(user.name)
-                    .font(.headline)
-
-                HStack(spacing: 8) {
-                    Text(user.department)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-
-                    Text("•")
-                        .foregroundColor(.secondary)
-
-                    Text("\(user.faceSignatures.count)個のデータ")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-            }
-
-            Spacer()
-
-            VStack(alignment: .trailing, spacing: 4) {
-                HStack(spacing: 4) {
-                    Circle()
-                        .fill(statusColor)
-                        .frame(width: 8, height: 8)
-                    Text(status.rawValue)
-                        .font(.caption)
-                        .foregroundColor(statusColor)
-                }
-
-                if let lastSeen = user.lastSeenAt {
-                    Text(lastSeen.formatted(date: .abbreviated, time: .shortened))
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                }
-            }
-        }
-        .padding(.vertical, 4)
-    }
-
-    private var statusColor: Color {
-        switch status {
-        case .notCheckedIn: return .orange
-        case .checkedIn: return .green
-        case .checkedOut: return .blue
         }
     }
 }
@@ -1234,107 +868,6 @@ struct MemberCardRow: View {
         case .notCheckedIn: return Color(.systemGray3)
         case .checkedIn:    return .green
         case .checkedOut:   return .blue
-        }
-    }
-}
-
-// MARK: - Enhanced History List View
-struct EnhancedHistoryListView: View {
-    @ObservedObject var store: FaceVectorStore
-    @Environment(\.dismiss) var dismiss
-    @State private var selectedTab = 0
-
-    var body: some View {
-        NavigationStack {
-            VStack(spacing: 0) {
-                // Tab Picker
-                Picker("", selection: $selectedTab) {
-                    Text("本日").tag(0)
-                    Text("履歴").tag(1)
-                }
-                .pickerStyle(.segmented)
-                .padding()
-
-                if selectedTab == 0 {
-                    todayAttendanceView
-                } else {
-                    historyView
-                }
-            }
-            .navigationTitle("出退勤記録")
-            .navigationBarTitleDisplayMode(.large)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    if selectedTab == 0 {
-                        Button("リセット", role: .destructive) {
-                            store.clearTodayAttendance()
-                        }
-                        .foregroundColor(.red)
-                    }
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("閉じる") { dismiss() }
-                }
-            }
-        }
-    }
-
-    private var todayAttendanceView: some View {
-        List {
-            // Summary Section
-            Section {
-                HStack {
-                    SummaryCard(
-                        title: "出勤",
-                        count: store.todayAttendance.values.filter { $0.isCheckedIn }.count,
-                        color: .green
-                    )
-                    SummaryCard(
-                        title: "退勤",
-                        count: store.todayAttendance.values.filter { $0.isCheckedOut }.count,
-                        color: .blue
-                    )
-                }
-                .listRowBackground(Color.clear)
-                .listRowInsets(EdgeInsets())
-            }
-
-            // Today's Records
-            Section("本日の記録") {
-                ForEach(Array(store.todayAttendance.values).sorted(by: { ($0.checkInTime ?? Date()) > ($1.checkInTime ?? Date()) }), id: \.id) { entry in
-                    TodayAttendanceRow(entry: entry)
-                }
-            }
-        }
-    }
-
-    private var historyView: some View {
-        List(store.attendanceLogs) { log in
-            HStack {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(log.userName)
-                        .font(.headline)
-
-                    Text(log.timestamp.formatted(date: .abbreviated, time: .shortened))
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-
-                Spacer()
-
-                HStack(spacing: 6) {
-                    Image(systemName: log.isCheckIn ? "sunrise.fill" : "sunset.fill")
-                        .foregroundColor(log.isCheckIn ? .orange : .blue)
-                    Text(log.isCheckIn ? "出勤" : "退勤")
-                        .font(.caption)
-                        .foregroundColor(log.isCheckIn ? .orange : .blue)
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 5)
-                .background(
-                    Capsule().fill(log.isCheckIn ? Color.orange.opacity(0.1) : Color.blue.opacity(0.1))
-                )
-            }
         }
     }
 }
@@ -1896,24 +1429,6 @@ struct CameraPreviewView: UIViewRepresentable {
     }
 }
 
-struct ScaleButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .scaleEffect(configuration.isPressed ? 0.95 : 1)
-            .animation(.spring(response: 0.2), value: configuration.isPressed)
-    }
-}
-
-struct BlurView: UIViewRepresentable {
-    var style: UIBlurEffect.Style
-
-    func makeUIView(context: Context) -> UIVisualEffectView {
-        UIVisualEffectView(effect: UIBlurEffect(style: style))
-    }
-
-    func updateUIView(_ uiView: UIVisualEffectView, context: Context) {}
-}
-
 struct ShareSheet: UIViewControllerRepresentable {
     var activityItems: [Any]
     var applicationActivities: [UIActivity]? = nil
@@ -1923,30 +1438,6 @@ struct ShareSheet: UIViewControllerRepresentable {
     }
 
     func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
-}
-
-extension View {
-    func cornerRadius(_ radius: CGFloat, corners: UIRectCorner) -> some View {
-        clipShape(RoundedCorner(radius: radius, corners: corners))
-    }
-}
-
-struct RoundedCorner: Shape {
-    var radius: CGFloat = .infinity
-    var corners: UIRectCorner = .allCorners
-
-    func path(in rect: CGRect) -> Path {
-        let path = UIBezierPath(roundedRect: rect, byRoundingCorners: corners, cornerRadii: CGSize(width: radius, height: radius))
-        return Path(path.cgPath)
-    }
-}
-
-extension ContentView {
-    // MARK: - Visitor Overlay
-    private func notificationFeedback(_ type: UINotificationFeedbackGenerator.FeedbackType) {
-        let generator = UINotificationFeedbackGenerator()
-        generator.notificationOccurred(type)
-    }
 }
 
 extension Color {

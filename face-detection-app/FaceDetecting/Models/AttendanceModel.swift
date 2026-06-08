@@ -53,19 +53,6 @@ struct AttendanceEntry: Identifiable, Codable {
     }
 }
 
-// MARK: - Daily Summary
-struct DailySummary {
-    let date: Date
-    let totalEmployees: Int
-    let checkedInCount: Int
-    let checkedOutCount: Int
-
-    var attendanceRate: Double {
-        guard totalEmployees > 0 else { return 0 }
-        return Double(checkedInCount) / Double(totalEmployees) * 100
-    }
-}
-
 // MARK: - User Status
 enum UserAttendanceStatus: String, Codable {
     case notCheckedIn = "未出勤"

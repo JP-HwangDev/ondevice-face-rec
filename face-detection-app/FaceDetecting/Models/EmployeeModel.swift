@@ -63,9 +63,3 @@ enum AttendanceType: String {
     case checkOut = "退勤"
 }
 
-struct AttendanceResult {
-    let success: Bool
-    let message: String
-    let employee: Employee?
-    let type: AttendanceType
-}

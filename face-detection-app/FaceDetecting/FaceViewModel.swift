@@ -16,7 +16,7 @@ struct SendablePixelBuffer: @unchecked Sendable {
 class CameraManager: NSObject, ObservableObject {
     @Published var currentBuffer: CVPixelBuffer?
     @Published var isAuthorized = false
-    @Published var videoOrientation: AVCaptureVideoOrientation = .portrait
+    @Published var rotationAngle: CGFloat = 90
     @Published var bufferSize: CGSize = .zero
     let session = AVCaptureSession()
     private let videoOutput = AVCaptureVideoDataOutput()
@@ -55,33 +55,17 @@ class CameraManager: NSObject, ObservableObject {
     }
 
     @objc private func updateOrientation() {
-        let deviceOrientation = UIDevice.current.orientation
-        let newOrientation: AVCaptureVideoOrientation
-        
-        switch deviceOrientation {
-        case .portrait: newOrientation = .portrait
-        case .portraitUpsideDown: newOrientation = .portraitUpsideDown
-        case .landscapeLeft: newOrientation = .landscapeRight // Mapping swap for front camera logic
-        case .landscapeRight: newOrientation = .landscapeLeft // Mapping swap for front camera logic
+        let newAngle: CGFloat
+        switch UIDevice.current.orientation {
+        case .portrait: newAngle = 90
+        case .portraitUpsideDown: newAngle = 270
+        case .landscapeLeft: newAngle = 180  // swap for front camera
+        case .landscapeRight: newAngle = 0   // swap for front camera
         default: return
         }
-        
-        if self.videoOrientation != newOrientation {
-            self.videoOrientation = newOrientation
-            if let connection = videoOutput.connection(with: .video) {
-                // For modern APIs (iOS 17+), use videoRotationAngle
-                // For older or fallback, we might use videoOrientation if needed
-                // But let's stay consistent with what setupSession uses
-                let angle: CGFloat
-                switch newOrientation {
-                case .portrait: angle = 90
-                case .landscapeLeft: angle = 0
-                case .landscapeRight: angle = 180
-                case .portraitUpsideDown: angle = 270
-                @unknown default: angle = 90
-                }
-                connection.videoRotationAngle = angle
-            }
+        if rotationAngle != newAngle {
+            rotationAngle = newAngle
+            videoOutput.connection(with: .video)?.videoRotationAngle = newAngle
         }
     }
 
@@ -192,7 +176,6 @@ class FaceRecognitionViewModel: ObservableObject {
     private var lastSampleTime: Date = Date()
     private var lastSampleYaw: Float? = nil
     private var lastSamplePitch: Float? = nil
-    private var capturedDirections: Set<Int> = []
     
     // Quality metrics
     @Published var lightingStatus: LightingStatus = .good
@@ -266,19 +249,8 @@ class FaceRecognitionViewModel: ObservableObject {
         observeUserChanges()
         
         // Orientation sync
-        cameraManager.$videoOrientation
-            .sink { [weak self] orient in
-                guard let self = self else { return }
-                let angle: CGFloat
-                switch orient {
-                case .portrait: angle = 90
-                case .landscapeLeft: angle = 0
-                case .landscapeRight: angle = 180
-                case .portraitUpsideDown: angle = 270
-                @unknown default: angle = 90
-                }
-                self.rotationAngle = angle
-            }
+        cameraManager.$rotationAngle
+            .assign(to: \.rotationAngle, on: self)
             .store(in: &cancellables)
             
         // Buffer size sync
@@ -709,7 +681,6 @@ class FaceRecognitionViewModel: ObservableObject {
         isRegistering = true
         lastSampleYaw = nil
         lastSamplePitch = nil
-        capturedDirections = []
         authStatus = "カメラを見てください"
     }
 
@@ -719,7 +690,6 @@ class FaceRecognitionViewModel: ObservableObject {
         isRegistering = false
         lastSampleYaw = nil
         lastSamplePitch = nil
-        capturedDirections = []
         authStatus = "顔を認識してください"
     }
 
@@ -761,32 +731,6 @@ class FaceRecognitionViewModel: ObservableObject {
                 self.authStatus = "登録準備完了"
             }
         }
-    }
-
-    private func getDirectionIndex(yaw: Float, pitch: Float) -> Int {
-        let yawThreshold: Float = 0.12
-        let pitchThreshold: Float = 0.08
-
-        let horizontal: Int
-        if yaw < -yawThreshold { horizontal = 1 }
-        else if yaw > yawThreshold { horizontal = -1 }
-        else { horizontal = 0 }
-
-        let vertical: Int
-        if pitch > pitchThreshold { vertical = 1 }
-        else if pitch < -pitchThreshold { vertical = -1 }
-        else { vertical = 0 }
-
-        if horizontal == 0 && vertical == 0 { return 0 }
-        if horizontal == 1 && vertical == 0 { return 1 }
-        if horizontal == 1 && vertical == 1 { return 2 }
-        if horizontal == 0 && vertical == 1 { return 3 }
-        if horizontal == -1 && vertical == 1 { return 4 }
-        if horizontal == -1 && vertical == 0 { return 5 }
-        if horizontal == -1 && vertical == -1 { return 6 }
-        if horizontal == 0 && vertical == -1 { return 7 }
-        if horizontal == 1 && vertical == -1 { return 8 }
-        return 0
     }
 
     func finalizeRegistration(name: String) {

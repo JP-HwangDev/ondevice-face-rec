@@ -8,7 +8,8 @@ class APIService: ObservableObject {
     @Published var isLoading = false
     @Published var errorMessage: String?
 
-    private let baseURL = "http://192.168.12.7:9000/api"
+    private let baseURL = "https://355f-240b-c010-422-d19-9521-bcee-c504-c489.ngrok-free.app/api"
+    private let apiKey = "111"
 
     private init() {}
 
@@ -26,6 +27,7 @@ class APIService: ObservableObject {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(apiKey, forHTTPHeaderField: "API-KEY")
         request.httpBody = try JSONEncoder().encode([String: String]())
         request.timeoutInterval = 10
 
@@ -38,6 +40,60 @@ class APIService: ObservableObject {
 
         let decoded = try JSONDecoder().decode(EmployeeListResponse.self, from: data)
         return decoded.userInfoList
+    }
+
+    // MARK: - Work In (출근)
+
+    func setWorkIn(userNo: String, userName: String) async throws {
+        guard let url = URL(string: "\(baseURL)/v1/setUserWorkIn") else {
+            throw APIError.invalidURL
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "PUT"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(apiKey, forHTTPHeaderField: "API-KEY")
+        request.httpBody = try JSONEncoder().encode(["userNo": userNo, "userName": userName])
+        request.timeoutInterval = 10
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse,
+              httpResponse.statusCode == 200 else {
+            throw APIError.serverError
+        }
+
+        if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let status = json["status"] as? Int, status != 200 {
+            throw APIError.serverError
+        }
+    }
+
+    // MARK: - Work Out (퇴근)
+
+    func setWorkOut(userNo: String, userName: String) async throws {
+        guard let url = URL(string: "\(baseURL)/v1/setUserWorkOut") else {
+            throw APIError.invalidURL
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "PATCH"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(apiKey, forHTTPHeaderField: "API-KEY")
+        request.httpBody = try JSONEncoder().encode(["userNo": userNo, "userName": userName])
+        request.timeoutInterval = 10
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse,
+              httpResponse.statusCode == 200 else {
+            throw APIError.serverError
+        }
+
+        if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let status = json["status"] as? Int, status != 200 {
+            throw APIError.serverError
+        }
     }
 
     // MARK: - Load Employees (Published)
@@ -69,7 +125,6 @@ class APIService: ObservableObject {
     func employee(named name: String) -> Employee? {
         employees.first { $0.userName == name }
     }
-
 }
 
 enum APIError: Error, LocalizedError {

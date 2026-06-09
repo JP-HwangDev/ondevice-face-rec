@@ -145,6 +145,10 @@ struct FaceRegistrationView: View {
         .onChange(of: viewModel.registrationProgress) { _, progress in
             if progress >= 1.0 {
                 withAnimation { phase = .done }
+                viewModel.finalizeRegistration(name: selectedEmployee?.userName ?? "")
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                    dismiss()
+                }
             }
         }
     }
@@ -288,7 +292,6 @@ struct FaceRegistrationView: View {
             Spacer()
 
             Button {
-                viewModel.finalizeRegistration(name: selectedEmployee?.userName ?? "")
                 dismiss()
             } label: {
                 Text("完了")

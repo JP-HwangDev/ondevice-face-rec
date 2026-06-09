@@ -172,7 +172,7 @@ class FaceRecognitionViewModel: ObservableObject {
     @Published var bufferSize: CGSize = .zero
 
     private var tempSignatures: [[Float]] = []
-    private let requiredSamples = 15
+    private let requiredSamples = 30
     private var lastSampleTime: Date = Date()
     private var lastSampleYaw: Float? = nil
     private var lastSamplePitch: Float? = nil
@@ -245,6 +245,9 @@ class FaceRecognitionViewModel: ObservableObject {
         cameraManager.start()
         authStatus = "顔を認識してください"
 
+        // Load saved thresholds
+        loadThresholdSettings()
+
         // Observe user changes to update cache
         observeUserChanges()
         
@@ -260,6 +263,27 @@ class FaceRecognitionViewModel: ObservableObject {
     }
     
     private var cancellables = Set<AnyCancellable>()
+
+    private func loadThresholdSettings() {
+        let ud = UserDefaults.standard
+        if ud.object(forKey: "rsp.matchThreshold") != nil { matchThreshold = ud.float(forKey: "rsp.matchThreshold") }
+        if ud.object(forKey: "rsp.dropThreshold") != nil  { dropThreshold  = ud.float(forKey: "rsp.dropThreshold") }
+        if ud.object(forKey: "rsp.smoothingAlpha") != nil { smoothingAlpha = ud.float(forKey: "rsp.smoothingAlpha") }
+        if ud.object(forKey: "rsp.marginRequired") != nil { marginRequired = ud.float(forKey: "rsp.marginRequired") }
+
+        let ud2 = UserDefaults.standard
+        $matchThreshold.dropFirst().sink { ud2.set($0, forKey: "rsp.matchThreshold") }.store(in: &cancellables)
+        $dropThreshold.dropFirst().sink  { ud2.set($0, forKey: "rsp.dropThreshold")  }.store(in: &cancellables)
+        $smoothingAlpha.dropFirst().sink { ud2.set($0, forKey: "rsp.smoothingAlpha") }.store(in: &cancellables)
+        $marginRequired.dropFirst().sink { ud2.set($0, forKey: "rsp.marginRequired") }.store(in: &cancellables)
+    }
+
+    func resetThresholds() {
+        matchThreshold = 0.70
+        dropThreshold  = 0.60
+        smoothingAlpha = 0.25
+        marginRequired = 0.04
+    }
 
     private func observeUserChanges() {
         // Rebuild embeddings cache when users change
@@ -501,17 +525,12 @@ class FaceRecognitionViewModel: ObservableObject {
     }
 
     // MARK: - Optimized Matching with SIMD + Centroid
-    // MARK: - Tuning Parameters
-    // alpha: 시간 평활화 강도 (낮을수록 안정, 높을수록 빠름) 권장: 0.25~0.40
-    private let smoothingAlpha: Float = 0.30
-    // centroidWeight: 평균벡터 가중치 (높을수록 안정적) 권장: 0.65~0.80
+    // MARK: - Tuning Parameters (UserDefaults-backed, editable from Settings)
     private let centroidWeight: Float = 0.75
-    // matchThreshold: 인식 판정 임계값 권장: 0.76~0.84
-    private let matchThreshold: Float = 0.78
-    // dropThreshold: 인식 해제 임계값 (matchThreshold보다 낮게) 권장: 0.68~0.74
-    private let dropThreshold: Float = 0.70
-    // marginRequired: 1위-2위 최소 차이 권장: 0.03~0.06
-    private let marginRequired: Float = 0.04
+    @Published var matchThreshold: Float = 0.70
+    @Published var dropThreshold: Float = 0.60
+    @Published var smoothingAlpha: Float = 0.25
+    @Published var marginRequired: Float = 0.04
 
     private func findTopMatchesOptimized(for embedding: [Float], count: Int = 5) async -> [Candidate] {
         if userCentroidCache.isEmpty {
@@ -707,7 +726,7 @@ class FaceRecognitionViewModel: ObservableObject {
 
         // Quality gate: reject low quality samples
         let quality = await MainActor.run { self.faceCaptureQuality }
-        if quality < 0.3 { return } // Reject blurry/dark samples
+        if quality < 0.18 { return } // Reject blurry/dark samples
 
         // Prefer different angles but don't block if same angle
         if let lastYaw = lastSampleYaw, tempSignatures.count < requiredSamples - 3 {

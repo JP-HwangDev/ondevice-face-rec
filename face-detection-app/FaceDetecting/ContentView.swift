@@ -666,7 +666,20 @@ struct ContentView: View {
             showingSuccessOverlay = true
         }
         viewModel.resetAutoAttendance()
-        Task { await apiService.silentRefresh() }
+        Task {
+            if let emp = apiService.employee(named: name) {
+                do {
+                    if type == .checkIn {
+                        try await apiService.setWorkIn(userNo: emp.userNo, userName: emp.userName)
+                    } else {
+                        try await apiService.setWorkOut(userNo: emp.userNo, userName: emp.userName)
+                    }
+                } catch {
+                    print("[Attendance] API error: \(error)")
+                }
+            }
+            await apiService.silentRefresh()
+        }
     }
 
     func convertPoint(_ pt: CGPoint, to size: CGSize) -> CGPoint {
@@ -1190,6 +1203,71 @@ struct SettingsView: View {
                     Spacer()
                     Text("1.0.0")
                         .foregroundColor(.secondary)
+                }
+            }
+
+            Section("認識精度") {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Text("認識閾値")
+                            .font(.subheadline)
+                        Spacer()
+                        Text(String(format: "%.2f", viewModel.matchThreshold))
+                            .font(.system(.subheadline, design: .monospaced))
+                            .foregroundColor(.blue)
+                    }
+                    Slider(value: $viewModel.matchThreshold, in: 0.60...0.90, step: 0.01)
+                        .tint(.blue)
+                        .onChange(of: viewModel.matchThreshold) { _, v in
+                            if viewModel.dropThreshold >= v - 0.04 {
+                                viewModel.dropThreshold = max(0.50, v - 0.08)
+                            }
+                        }
+                    Text("低い → 認識しやすい（誤認識増）　高い → 厳密（見逃し増）")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+                .padding(.vertical, 4)
+
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Text("解除閾値")
+                            .font(.subheadline)
+                        Spacer()
+                        Text(String(format: "%.2f", viewModel.dropThreshold))
+                            .font(.system(.subheadline, design: .monospaced))
+                            .foregroundColor(.orange)
+                    }
+                    Slider(value: $viewModel.dropThreshold, in: 0.50...0.80, step: 0.01)
+                        .tint(.orange)
+                    Text("認識後にこの値を下回ると未認証に戻る")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+                .padding(.vertical, 4)
+
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Text("反応速度")
+                            .font(.subheadline)
+                        Spacer()
+                        Text(String(format: "%.2f", viewModel.smoothingAlpha))
+                            .font(.system(.subheadline, design: .monospaced))
+                            .foregroundColor(.green)
+                    }
+                    Slider(value: $viewModel.smoothingAlpha, in: 0.10...0.60, step: 0.05)
+                        .tint(.green)
+                    Text("低い → 安定（ゆっくり）　高い → 素早く反応")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+                .padding(.vertical, 4)
+
+                Button {
+                    viewModel.resetThresholds()
+                } label: {
+                    Label("デフォルトに戻す (0.70 / 0.60 / 0.25)", systemImage: "arrow.counterclockwise")
+                        .font(.subheadline)
                 }
             }
 

@@ -43,11 +43,19 @@ class FaceVectorStore: ObservableObject {
     @Published var attendanceLogs: [AttendanceRecord] = []
     @Published var todayAttendance: [String: AttendanceEntry] = [:] // userName -> AttendanceEntry
     @Published var weeklyStats: [DayStat] = []
+    @Published var consentLogs: [ConsentRecord] = []
 
     struct DayStat: Identifiable {
         let id = UUID()
         let day: String
         let count: Int
+    }
+
+    struct ConsentRecord: Identifiable, Codable {
+        let id: String
+        let userName: String
+        let consentVersion: String
+        let timestamp: Date
     }
 
     private var db: OpaquePointer?
@@ -66,6 +74,7 @@ class FaceVectorStore: ObservableObject {
         loadUsers()
         loadLogs()
         loadTodayAttendance()
+        loadConsentLogs()
     }
 
     deinit {
@@ -128,6 +137,15 @@ class FaceVectorStore: ObservableObject {
         );
         """
 
+        let createConsentTable = """
+        CREATE TABLE IF NOT EXISTS ConsentLogs (
+            id TEXT PRIMARY KEY,
+            user_name TEXT,
+            consent_version TEXT,
+            timestamp REAL
+        );
+        """
+
         // Create indexes for faster queries
         let createIndexes = """
         CREATE INDEX IF NOT EXISTS idx_logs_timestamp ON AttendanceLogs(timestamp DESC);
@@ -140,6 +158,7 @@ class FaceVectorStore: ObservableObject {
         execute(sql: createVectorsTable)
         execute(sql: createLogsTable)
         execute(sql: createDailyAttendanceTable)
+        execute(sql: createConsentTable)
 
         for statement in createIndexes.components(separatedBy: ";") where !statement.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             execute(sql: statement + ";")
@@ -541,6 +560,43 @@ class FaceVectorStore: ObservableObject {
         DispatchQueue.main.async {
             self.todayAttendance = entries
         }
+    }
+
+    // MARK: - Consent Logs
+    func saveConsent(userName: String, consentVersion: String) {
+        let id = UUID().uuidString
+        let ts = Date().timeIntervalSince1970
+        let insertSql = "INSERT INTO ConsentLogs (id, user_name, consent_version, timestamp) VALUES (?, ?, ?, ?);"
+        dbQueue.async { [weak self] in
+            guard let self = self else { return }
+            var stmt: OpaquePointer?
+            if sqlite3_prepare_v2(self.db, insertSql, -1, &stmt, nil) == SQLITE_OK {
+                sqlite3_bind_text(stmt, 1, (id as NSString).utf8String, -1, nil)
+                sqlite3_bind_text(stmt, 2, (userName as NSString).utf8String, -1, nil)
+                sqlite3_bind_text(stmt, 3, (consentVersion as NSString).utf8String, -1, nil)
+                sqlite3_bind_double(stmt, 4, ts)
+                sqlite3_step(stmt)
+            }
+            sqlite3_finalize(stmt)
+            DispatchQueue.main.async { self.loadConsentLogs() }
+        }
+    }
+
+    func loadConsentLogs() {
+        var logs: [ConsentRecord] = []
+        let sql = "SELECT id, user_name, consent_version, timestamp FROM ConsentLogs ORDER BY timestamp DESC;"
+        var stmt: OpaquePointer?
+        if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                let idStr = String(cString: sqlite3_column_text(stmt, 0))
+                let name = String(cString: sqlite3_column_text(stmt, 1))
+                let version = String(cString: sqlite3_column_text(stmt, 2))
+                let ts = sqlite3_column_double(stmt, 3)
+                logs.append(ConsentRecord(id: idStr, userName: name, consentVersion: version, timestamp: Date(timeIntervalSince1970: ts)))
+            }
+        }
+        sqlite3_finalize(stmt)
+        DispatchQueue.main.async { self.consentLogs = logs }
     }
 
     // MARK: - Backup & Restore

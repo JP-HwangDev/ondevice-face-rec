@@ -8,7 +8,7 @@ class APIService: ObservableObject {
     @Published var isLoading = false
     @Published var errorMessage: String?
 
-    private let baseURL = "https://355f-240b-c010-422-d19-9521-bcee-c504-c489.ngrok-free.app/api"
+    private let baseURL = "https://flowing-typically-mole.ngrok-free.app/api"
     private let apiKey = "111"
 
     private init() {}

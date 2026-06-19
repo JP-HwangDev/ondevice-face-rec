@@ -485,6 +485,12 @@ class FaceRecognitionViewModel: ObservableObject {
         recognitionHistory.removeAll()
     }
 
+    func resetAfterRegistration(employeeName: String) {
+        shouldAutoAttendance = false
+        recognitionHistory.removeAll()
+        lastRecognizedName = employeeName
+    }
+
     private func applySmoothResults(at index: Int, newName: String, newSimilarity: Float, embedding: [Float]) {
         var currentFace = self.detectedFaces[index]
         // EMA smoothing — lower alpha = more stable, slower to react

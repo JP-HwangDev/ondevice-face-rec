@@ -87,6 +87,35 @@ class EmployeeStore: ObservableObject {
         }
     }
 
+    func appendEmbedding(_ vector: [Float], toEmployeeId id: String, cap: Int = 100) {
+        guard !vector.isEmpty,
+              let index = employees.firstIndex(where: { $0.id == id }),
+              employees[index].faceVector.count == vector.count else { return }
+
+        var employee = employees[index]
+        var updated = employee.faceVectors
+        updated.append(vector)
+        if updated.count > cap {
+            updated.removeFirst(updated.count - cap)
+        }
+        employee.faceVectors = updated
+        employee.faceVector = Employee.averageVector(from: updated)
+
+        do {
+            try dbQueue.write { db in
+                try employee.update(db)
+            }
+            employees[index] = employee
+            DebugLogger.shared.log(
+                category: .faceAuth,
+                message: "임베딩 갱신: \(employee.name)",
+                details: "갤러리 \(updated.count)/\(cap)개"
+            )
+        } catch {
+            DebugLogger.shared.log(level: .error, category: .database, message: "임베딩 갱신 실패: \(employee.name)", details: error.localizedDescription)
+        }
+    }
+
     func deleteAll() {
         do {
             let count = employees.count

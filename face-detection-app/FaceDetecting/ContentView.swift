@@ -126,10 +126,12 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showingConsent) {
             ConsentModalView(employeeName: pendingConsentEmployeeName) { name in
-                // Save consent and proceed to registration
                 viewModel.store.saveConsent(userName: name, consentVersion: "v1.0-2026-06-19")
                 selectedRegistrationEmployee = apiService.employees.first { $0.userName == name }
-                showingFaceRegistration = true
+                showingConsent = false
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                    showingFaceRegistration = true
+                }
             } onCancel: {
                 // Do nothing
             }
@@ -1053,7 +1055,10 @@ struct SettingsView: View {
                 ConsentModalView(employeeName: pendingConsentEmployeeName) { name in
                     viewModel.store.saveConsent(userName: name, consentVersion: "v1.0-2026-06-19")
                     selectedRegistrationEmployee = apiService.employees.first { $0.userName == name }
-                    showingFaceRegistration = true
+                    showingConsent = false
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                        showingFaceRegistration = true
+                    }
                 } onCancel: {
                     // Do nothing
                 }

@@ -157,36 +157,27 @@ struct FaceRegistrationView: View {
         let guideSize: CGFloat = min(geo.size.width * 0.72, 280)
         let progress = viewModel.registrationProgress
         let hasFace = !viewModel.detectedFaces.isEmpty
+        let sampleCount = Int(progress * 30)
 
         return VStack(spacing: 0) {
-            // Name + status
-            VStack(spacing: 6) {
-                if let emp = selectedEmployee {
-                    Text(emp.userName)
-                        .font(.title3.bold())
-                        .foregroundColor(.white)
-                }
-                Text(hasFace ? "顔を検出中..." : "カメラに顔を向けてください")
-                    .font(.subheadline)
-                    .foregroundColor(hasFace ? .green : .white.opacity(0.7))
-                    .animation(.easeInOut, value: hasFace)
-            }
-            .padding(.top, geo.safeAreaInsets.top + 20)
-            .padding(.horizontal, 20)
-
             Spacer()
 
             // Face guide circle
             ZStack {
-                // Outer ring
+                // Outer decorative ring
                 Circle()
-                    .stroke(Color.white.opacity(0.15), lineWidth: 2)
-                    .frame(width: guideSize + 20, height: guideSize + 20)
+                    .stroke(Color.white.opacity(0.1), lineWidth: 1.5)
+                    .frame(width: guideSize + 24, height: guideSize + 24)
+
+                // Progress track (background)
+                Circle()
+                    .stroke(Color.white.opacity(0.12), lineWidth: 9)
+                    .frame(width: guideSize, height: guideSize)
 
                 // Detection ring
                 Circle()
-                    .stroke(hasFace ? Color.green : Color.white.opacity(0.4),
-                            lineWidth: hasFace ? 3 : 1.5)
+                    .stroke(hasFace ? Color.green.opacity(0.5) : Color.white.opacity(0.3),
+                            lineWidth: hasFace ? 2.5 : 1.5)
                     .frame(width: guideSize, height: guideSize)
                     .animation(.easeInOut(duration: 0.3), value: hasFace)
 
@@ -198,29 +189,53 @@ struct FaceRegistrationView: View {
                             colors: [.green, .cyan],
                             startPoint: .topLeading,
                             endPoint: .bottomTrailing),
-                        style: StrokeStyle(lineWidth: 5, lineCap: .round))
+                        style: StrokeStyle(lineWidth: 9, lineCap: .round))
                     .frame(width: guideSize, height: guideSize)
                     .rotationEffect(.degrees(-90))
+                    .shadow(color: Color.green.opacity(progress > 0.05 ? 0.6 : 0), radius: 8)
                     .animation(.easeOut(duration: 0.2), value: progress)
 
-                // Face icon
-                Image(systemName: hasFace ? "person.fill" : "person.and.background.dotted")
-                    .font(.system(size: guideSize * 0.22))
-                    .foregroundColor(hasFace ? .green.opacity(0.8) : .white.opacity(0.25))
-                    .animation(.easeInOut, value: hasFace)
+                // Center: percentage + count, or icon when not started
+                VStack(spacing: 3) {
+                    if progress > 0 {
+                        Text("\(Int(progress * 100))%")
+                            .font(.system(size: guideSize * 0.17, weight: .bold, design: .rounded))
+                            .foregroundColor(.white)
+                            .shadow(color: .black.opacity(0.5), radius: 2)
+                        Text("\(sampleCount) / 30")
+                            .font(.system(size: guideSize * 0.075, weight: .medium))
+                            .foregroundColor(.white.opacity(0.55))
+                    } else {
+                        Image(systemName: hasFace ? "person.fill" : "person.and.background.dotted")
+                            .font(.system(size: guideSize * 0.22))
+                            .foregroundColor(hasFace ? .green.opacity(0.8) : .white.opacity(0.2))
+                            .animation(.easeInOut, value: hasFace)
+                    }
+                }
             }
 
             Spacer()
 
-            // Progress bar + hint
-            VStack(spacing: 14) {
-                // Dots
-                HStack(spacing: 10) {
+            // Bottom progress panel
+            VStack(spacing: 12) {
+                // Face detection status
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(hasFace ? Color.green : Color.orange)
+                        .frame(width: 7, height: 7)
+                    Text(hasFace ? "顔を検出中..." : "カメラに顔を向けてください")
+                        .font(.caption)
+                        .foregroundColor(hasFace ? .green : .white.opacity(0.7))
+                        .animation(.easeInOut, value: hasFace)
+                }
+
+                // Segment dots
+                HStack(spacing: 7) {
                     ForEach(0..<15, id: \.self) { i in
-                        Circle()
-                            .fill(Float(i) < progress * 15 ? Color.green : Color.white.opacity(0.2))
-                            .frame(width: 10, height: 10)
-                            .animation(.spring(), value: progress)
+                        RoundedRectangle(cornerRadius: 3)
+                            .fill(Float(i) < progress * 15 ? Color.green : Color.white.opacity(0.18))
+                            .frame(width: 14, height: 7)
+                            .animation(.spring(response: 0.25, dampingFraction: 0.7), value: progress)
                     }
                 }
 
@@ -240,7 +255,17 @@ struct FaceRegistrationView: View {
                         ok: viewModel.isFaceCentered)
                 }
             }
-            .padding(.bottom, geo.safeAreaInsets.bottom + 24)
+            .padding(.vertical, 18)
+            .padding(.horizontal, 24)
+            .frame(maxWidth: .infinity)
+            .background(Color.black.opacity(0.6))
+            .cornerRadius(18)
+            .overlay(
+                RoundedRectangle(cornerRadius: 18)
+                    .stroke(Color.white.opacity(0.08), lineWidth: 1)
+            )
+            .padding(.horizontal, 16)
+            .padding(.bottom, geo.safeAreaInsets.bottom + 16)
         }
     }
 

@@ -197,19 +197,7 @@ struct ContentView: View {
         }
         .onChange(of: viewModel.shouldAutoAttendance) { _, shouldShow in
             if shouldShow {
-                guard !showingFaceRegistration, !showingSettings else {
-                    viewModel.resetAutoAttendance()
-                    return
-                }
-                if let face = viewModel.detectedFaces.first,
-                   let candidate = face.candidates.first {
-                    let serverStatus = apiService.employee(named: candidate.name)?.serverStatus ?? .notCheckedIn
-                    guard serverStatus != .checkedOut else {
-                        viewModel.resetAutoAttendance()
-                        return
-                    }
-                    executeAttendance(name: candidate.name, type: serverStatus == .notCheckedIn ? .checkIn : .checkOut)
-                }
+                viewModel.resetAutoAttendance()
             }
         }
     }
@@ -517,14 +505,22 @@ struct ContentView: View {
                                     .frame(width: 14)
                                 Text(candidate.name)
                                     .font(.system(size: 13, weight: .medium))
-                                    .foregroundColor(.white.opacity(0.6))
+                                    .foregroundColor(.white.opacity(0.7))
+                                    .lineLimit(1)
                                     .frame(maxWidth: .infinity, alignment: .leading)
-                                Text("\(Int(candidate.similarity * 100))%")
-                                    .font(.system(size: 11, weight: .medium, design: .monospaced))
-                                    .foregroundColor(.white.opacity(0.35))
-                                Circle()
-                                    .fill(cStatus == .checkedIn ? Color.green : cStatus == .checkedOut ? Color.blue : Color(.systemGray4))
-                                    .frame(width: 6, height: 6)
+                                if cStatus != .checkedOut {
+                                    Text(cStatus == .notCheckedIn ? "出勤" : "退勤")
+                                        .font(.system(size: 10, weight: .bold))
+                                        .foregroundColor(.white)
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 3)
+                                        .background(cStatus == .notCheckedIn ? Color.blue.opacity(0.7) : Color.orange.opacity(0.7))
+                                        .clipShape(Capsule())
+                                } else {
+                                    Circle()
+                                        .fill(Color.blue)
+                                        .frame(width: 6, height: 6)
+                                }
                             }
                             .padding(.horizontal, 16)
                             .padding(.vertical, 8)
@@ -545,7 +541,11 @@ struct ContentView: View {
     private func compactAttendanceButton(name: String, status: ServerAttendanceStatus) -> some View {
         switch status {
         case .notCheckedIn:
-            Button { executeAttendance(name: name, type: .checkIn) } label: {
+            Button {
+                pendingName = name
+                pendingType = .checkIn
+                showingCandidateConfirm = true
+            } label: {
                 HStack(spacing: 5) {
                     Image(systemName: "sunrise.fill").font(.system(size: 12))
                     Text("出勤").font(.system(size: 13, weight: .bold))
@@ -559,7 +559,11 @@ struct ContentView: View {
             .buttonStyle(.plain)
 
         case .checkedIn:
-            Button { executeAttendance(name: name, type: .checkOut) } label: {
+            Button {
+                pendingName = name
+                pendingType = .checkOut
+                showingCandidateConfirm = true
+            } label: {
                 HStack(spacing: 5) {
                     Image(systemName: "sunset.fill").font(.system(size: 12))
                     Text("退勤").font(.system(size: 13, weight: .bold))

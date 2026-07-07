@@ -62,7 +62,7 @@ struct ContentView: View {
 
                             Spacer()
 
-                            if let face = viewModel.detectedFaces.first(where: { $0.rawSimilarity > 0.72 }) {
+                            if !viewModel.isMaskDetected, let face = viewModel.detectedFaces.first(where: { $0.rawSimilarity > 0.72 }) {
                                 recognizedUserPanel(face: face, geometry: geometry)
                                     .padding(.trailing, geometry.safeAreaInsets.trailing + 20)
                             } else {
@@ -110,6 +110,12 @@ struct ContentView: View {
                 if showingSuccessOverlay {
                     successOverlayView
                         .zIndex(100)
+                }
+
+                // Mask Warning Overlay
+                if viewModel.isMaskDetected {
+                    maskWarningOverlay
+                        .zIndex(101)
                 }
             }
         }
@@ -207,7 +213,7 @@ struct ContentView: View {
     private var cameraLayer: some View {
         Group {
             if viewModel.cameraManager.isAuthorized && !showingFaceRegistration && !showingSettings {
-                 CameraPreviewView(session: viewModel.cameraManager.session, rotationAngle: viewModel.rotationAngle, faces: viewModel.detectedFaces)
+                 CameraPreviewView(session: viewModel.cameraManager.session, rotationAngle: viewModel.rotationAngle, faces: viewModel.detectedFaces, isMaskDetected: viewModel.isMaskDetected)
                     .id(viewModel.refreshID) // Force view refresh
                     .ignoresSafeArea()
                     .onReceive(viewModel.cameraManager.$currentBuffer) { buffer in
@@ -408,7 +414,10 @@ struct ContentView: View {
     // MARK: - Bottom Section
     private func bottomSection(geometry: GeometryProxy) -> some View {
         VStack(spacing: 12) {
-            if let face = viewModel.detectedFaces.first(where: { !$0.candidates.isEmpty }) {
+            if viewModel.isMaskDetected {
+                // Mask prompt already covers the screen — don't also show recognition candidates
+                EmptyView()
+            } else if let face = viewModel.detectedFaces.first(where: { !$0.candidates.isEmpty }) {
                 recognizedUserPanel(face: face, geometry: geometry)
             } else {
                 // No face: show nothing (clean)
@@ -682,6 +691,40 @@ struct ContentView: View {
                 withAnimation(.easeOut) { showingSuccessOverlay = false }
             }
         }
+    }
+
+    private var maskWarningOverlay: some View {
+        VStack {
+            HStack(spacing: 12) {
+                Image(systemName: "facemask.fill")
+                    .font(.system(size: 22))
+                    .foregroundStyle(LinearGradient(colors: [.orange, .red], startPoint: .top, endPoint: .bottom))
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("マスクを外してください")
+                        .font(.system(size: 15, weight: .bold, design: .rounded))
+                        .foregroundColor(.white)
+                    Text("認証のため、マスクを外してカメラをご覧ください")
+                        .font(.system(size: 12))
+                        .foregroundColor(.white.opacity(0.65))
+                }
+
+                Spacer()
+            }
+            .padding(.horizontal, 18)
+            .padding(.vertical, 14)
+            .background(.ultraThinMaterial)
+            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(Color.orange.opacity(0.4), lineWidth: 1))
+            .shadow(color: .black.opacity(0.2), radius: 16, y: 4)
+            .padding(.horizontal, 20)
+            .padding(.top, 60)
+
+            Spacer()
+        }
+        .transition(.move(edge: .top).combined(with: .opacity))
+        .animation(.spring(response: 0.4, dampingFraction: 0.8), value: viewModel.isMaskDetected)
     }
 
     // MARK: - Helper Methods
@@ -1324,6 +1367,28 @@ struct SettingsView: View {
                 }
             }
 
+            Section("マスク検知") {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Text("検知感度")
+                            .font(.subheadline)
+                        Spacer()
+                        Text(String(format: "%.0f", viewModel.maskColorDistanceThreshold))
+                            .font(.system(.subheadline, design: .monospaced))
+                            .foregroundColor(.pink)
+                    }
+                    Slider(value: $viewModel.maskColorDistanceThreshold, in: 10...60, step: 1)
+                        .tint(.pink)
+                    Text("低い → 検知しやすい（誤検知増）　高い → 厳密（見逃し増）")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                    Text("マスクを着けても反応しない場合は数値を下げてください")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+                .padding(.vertical, 4)
+            }
+
             Section("危険な操作") {
                 Button(role: .destructive) {
                     viewModel.store.clearTodayAttendance()
@@ -1384,6 +1449,7 @@ struct CameraPreviewView: UIViewRepresentable {
     let session: AVCaptureSession
     let rotationAngle: CGFloat
     var faces: [FaceRecognitionViewModel.RecognizedFace] = []
+    var isMaskDetected: Bool = false
 
     func makeUIView(context: Context) -> PreviewUIView {
         let view = PreviewUIView()
@@ -1415,7 +1481,7 @@ struct CameraPreviewView: UIViewRepresentable {
         }
         
         // Update face overlay
-        uiView.updateFaces(faces, rotationAngle: rotationAngle)
+        uiView.updateFaces(faces, rotationAngle: rotationAngle, isMaskDetected: isMaskDetected)
     }
 
     class PreviewUIView: UIView {
@@ -1443,7 +1509,7 @@ struct CameraPreviewView: UIViewRepresentable {
             }
         }
         
-        func updateFaces(_ faces: [FaceRecognitionViewModel.RecognizedFace], rotationAngle: CGFloat = 90) {
+        func updateFaces(_ faces: [FaceRecognitionViewModel.RecognizedFace], rotationAngle: CGFloat = 90, isMaskDetected: Bool = false) {
             overlayLayer.sublayers?.forEach { $0.removeFromSuperlayer() }
             
             let layerW = bounds.width
@@ -1467,8 +1533,8 @@ struct CameraPreviewView: UIViewRepresentable {
             }
             
             for face in faces {
-                let isRecognized = face.name != "未認証" && !face.name.isEmpty && face.name != "認証中..."
-                let color: UIColor = isRecognized ? .systemGreen : .cyan
+                let isRecognized = !isMaskDetected && face.name != "未認証" && !face.name.isEmpty && face.name != "認証中..."
+                let color: UIColor = isMaskDetected ? .systemOrange : (isRecognized ? .systemGreen : .cyan)
                 
                 // Bounding box
                 let tl = v2l(CGPoint(x: face.rect.minX, y: face.rect.maxY))
@@ -1507,9 +1573,10 @@ struct CameraPreviewView: UIViewRepresentable {
                     overlayLayer.addSublayer(sl)
                 }
                 
-                // Name label above box
-                if !face.name.isEmpty {
-                    let txt = face.name == "未認証" ? "UNKNOWN" : "\(face.name) \(face.score)%"
+                // Name label above box — while a mask is detected, always show the
+                // removal prompt here instead of the recognition name/UNKNOWN text.
+                if isMaskDetected || !face.name.isEmpty {
+                    let txt = isMaskDetected ? "マスクを外してください" : (face.name == "未認証" ? "UNKNOWN" : "\(face.name) \(face.score)%")
                     let tl = CATextLayer()
                     tl.string = txt; tl.fontSize = 13
                     tl.font = UIFont.systemFont(ofSize: 13, weight: .bold)
@@ -1517,7 +1584,7 @@ struct CameraPreviewView: UIViewRepresentable {
                     tl.backgroundColor = color.withAlphaComponent(0.75).cgColor
                     tl.cornerRadius = 8; tl.masksToBounds = true
                     tl.alignmentMode = .center; tl.contentsScale = UITraitCollection.current.displayScale
-                    let w = max(layerRect.width, 100)
+                    let w = max(layerRect.width, isMaskDetected ? 220 : 100)
                     tl.frame = CGRect(x: layerRect.midX - w/2, y: layerRect.minY - 34, width: w, height: 26)
                     overlayLayer.addSublayer(tl)
                 }

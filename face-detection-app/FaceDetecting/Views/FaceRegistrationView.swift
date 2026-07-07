@@ -138,6 +138,12 @@ struct FaceRegistrationView: View {
 
                 // Overlay
                 captureOverlay(geo: geo)
+
+                // Mask warning — takes priority over the normal capture guidance
+                if viewModel.isMaskDetected {
+                    maskWarningBanner(geo: geo)
+                        .zIndex(10)
+                }
             }
         }
         .ignoresSafeArea()
@@ -176,10 +182,11 @@ struct FaceRegistrationView: View {
 
                 // Detection ring
                 Circle()
-                    .stroke(hasFace ? Color.green.opacity(0.5) : Color.white.opacity(0.3),
+                    .stroke(viewModel.isMaskDetected ? Color.red.opacity(0.6) : (hasFace ? Color.green.opacity(0.5) : Color.white.opacity(0.3)),
                             lineWidth: hasFace ? 2.5 : 1.5)
                     .frame(width: guideSize, height: guideSize)
                     .animation(.easeInOut(duration: 0.3), value: hasFace)
+                    .animation(.easeInOut(duration: 0.3), value: viewModel.isMaskDetected)
 
                 // Progress arc
                 Circle()
@@ -221,12 +228,13 @@ struct FaceRegistrationView: View {
                 // Face detection status
                 HStack(spacing: 6) {
                     Circle()
-                        .fill(hasFace ? Color.green : Color.orange)
+                        .fill(viewModel.isMaskDetected ? Color.red : (hasFace ? Color.green : Color.orange))
                         .frame(width: 7, height: 7)
-                    Text(hasFace ? "顔を検出中..." : "カメラに顔を向けてください")
+                    Text(viewModel.isMaskDetected ? "マスクを外してください" : (hasFace ? "顔を検出中..." : "カメラに顔を向けてください"))
                         .font(.caption)
-                        .foregroundColor(hasFace ? .green : .white.opacity(0.7))
+                        .foregroundColor(viewModel.isMaskDetected ? .red : (hasFace ? .green : .white.opacity(0.7)))
                         .animation(.easeInOut, value: hasFace)
+                        .animation(.easeInOut, value: viewModel.isMaskDetected)
                 }
 
                 // Segment dots
@@ -267,6 +275,28 @@ struct FaceRegistrationView: View {
             .padding(.horizontal, 16)
             .padding(.bottom, geo.safeAreaInsets.bottom + 16)
         }
+    }
+
+    private func maskWarningBanner(geo: GeometryProxy) -> some View {
+        VStack {
+            HStack(spacing: 10) {
+                Image(systemName: "facemask.fill")
+                    .foregroundStyle(LinearGradient(colors: [.orange, .red], startPoint: .top, endPoint: .bottom))
+                Text("マスクを外してください")
+                    .font(.system(size: 14, weight: .bold, design: .rounded))
+                    .foregroundColor(.white)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .background(.ultraThinMaterial)
+            .clipShape(Capsule())
+            .overlay(Capsule().stroke(Color.orange.opacity(0.5), lineWidth: 1))
+            .padding(.top, geo.safeAreaInsets.top + 8)
+
+            Spacer()
+        }
+        .transition(.move(edge: .top).combined(with: .opacity))
+        .animation(.spring(response: 0.4, dampingFraction: 0.8), value: viewModel.isMaskDetected)
     }
 
     private func qualityBadge(icon: String, label: String, ok: Bool) -> some View {

@@ -7,11 +7,18 @@ struct FaceRegistrationView: View {
     @Environment(\.dismiss) var dismiss
 
     var preselectedEmployee: Employee? = nil
+    var mode: RegistrationMode = .employee
 
     @State private var selectedEmployee: Employee?
     @State private var phase: Phase = .picking
+    @State private var visitorCompany = ""
+    @State private var visitorName = ""
+    @State private var visitorPurpose = ""
+    @State private var isSubmittingVisitor = false
+    @State private var visitorError: String?
 
     enum Phase { case picking, capturing, done }
+    enum RegistrationMode { case employee, visitor }
 
     // MARK: - Body
 
@@ -20,7 +27,11 @@ struct FaceRegistrationView: View {
             Group {
                 switch phase {
                 case .picking:
-                    employeePickerView
+                    if mode == .visitor {
+                        visitorFormView
+                    } else {
+                        employeePickerView
+                    }
                 case .capturing:
                     cameraView
                 case .done:
@@ -57,6 +68,15 @@ struct FaceRegistrationView: View {
     private func startCapture() {
         viewModel.startRegistration()
         withAnimation { phase = .capturing }
+    }
+
+    private func startVisitorCapture() {
+        visitorError = nil
+        guard !visitorName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            visitorError = "名前を入力してください"
+            return
+        }
+        startCapture()
     }
 
     // MARK: - Phase: Employee Picker
@@ -109,6 +129,37 @@ struct FaceRegistrationView: View {
         .task { await apiService.loadEmployees() }
     }
 
+    private var visitorFormView: some View {
+        Form {
+            Section("訪問者情報") {
+                TextField("会社名", text: $visitorCompany)
+                    .textContentType(.organizationName)
+                TextField("名前", text: $visitorName)
+                    .textContentType(.name)
+                TextField("訪問目的", text: $visitorPurpose)
+            }
+
+            if let visitorError {
+                Section {
+                    Text(visitorError)
+                        .font(.caption)
+                        .foregroundColor(.red)
+                }
+            }
+
+            Section {
+                Button {
+                    startVisitorCapture()
+                } label: {
+                    Label("顔撮影へ進む", systemImage: "camera.fill")
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
+                }
+            }
+        }
+        .navigationTitle("訪問者登録")
+    }
+
     // MARK: - Phase: Camera Capture
 
     private var cameraView: some View {
@@ -147,11 +198,45 @@ struct FaceRegistrationView: View {
             }
         }
         .ignoresSafeArea()
-        .navigationTitle(selectedEmployee?.userName ?? "顔登録")
+        .navigationTitle(mode == .visitor ? (visitorName.isEmpty ? "訪問者登録" : visitorName) : (selectedEmployee?.userName ?? "顔登録"))
         .onChange(of: viewModel.registrationProgress) { _, progress in
             if progress >= 1.0 {
                 withAnimation { phase = .done }
-                viewModel.finalizeRegistration(name: selectedEmployee?.userName ?? "")
+                if mode == .visitor {
+                    finalizeVisitor()
+                } else {
+                    viewModel.finalizeRegistration(name: selectedEmployee?.userName ?? "")
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                        dismiss()
+                    }
+                }
+            }
+        }
+    }
+
+    private func finalizeVisitor() {
+        let name = visitorName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let company = visitorCompany.trimmingCharacters(in: .whitespacesAndNewlines)
+        let purpose = visitorPurpose.trimmingCharacters(in: .whitespacesAndNewlines)
+        let photo = viewModel.currentFrameJPEGBase64()
+
+        isSubmittingVisitor = true
+        Task {
+            do {
+                try await apiService.registerVisitor(
+                    company: company,
+                    name: name,
+                    purpose: purpose,
+                    photoBase64: photo
+                )
+                await apiService.loadVisitors()
+            } catch {
+                print("[VisitorRegistration] API error: \(error)")
+            }
+
+            await MainActor.run {
+                viewModel.finalizeVisitorRegistration(name: name, company: company, purpose: purpose)
+                isSubmittingVisitor = false
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                     dismiss()
                 }
@@ -166,6 +251,24 @@ struct FaceRegistrationView: View {
         let sampleCount = Int(progress * 30)
 
         return VStack(spacing: 0) {
+            VStack(spacing: 6) {
+                if mode == .visitor {
+                    Text(visitorName)
+                        .font(.title3.bold())
+                        .foregroundColor(.white)
+                } else if let emp = selectedEmployee {
+                    Text(emp.userName)
+                        .font(.title3.bold())
+                        .foregroundColor(.white)
+                }
+                Text(hasFace ? "顔を検出中..." : "カメラに顔を向けてください")
+                    .font(.subheadline)
+                    .foregroundColor(hasFace ? .green : .white.opacity(0.7))
+                    .animation(.easeInOut, value: hasFace)
+            }
+            .padding(.top, geo.safeAreaInsets.top + 20)
+            .padding(.horizontal, 20)
+
             Spacer()
 
             // Face guide circle
@@ -336,11 +439,16 @@ struct FaceRegistrationView: View {
             VStack(spacing: 10) {
                 Text("登録完了")
                     .font(.title.bold())
-                if let name = selectedEmployee?.userName {
+                let displayName = mode == .visitor ? visitorName : selectedEmployee?.userName
+                if let name = displayName, !name.isEmpty {
                     Text("\(name)さんの顔データを登録しました")
                         .font(.subheadline)
                         .foregroundColor(.secondary)
                         .multilineTextAlignment(.center)
+                }
+                if isSubmittingVisitor {
+                    ProgressView("サーバーへ登録中...")
+                        .font(.caption)
                 }
             }
 
@@ -363,4 +471,3 @@ struct FaceRegistrationView: View {
         .navigationTitle("")
     }
 }
-

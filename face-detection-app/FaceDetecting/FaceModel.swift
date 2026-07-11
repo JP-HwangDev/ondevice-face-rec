@@ -3,6 +3,18 @@ import Combine
 import SwiftUI
 import SQLite3
 
+enum FaceUserType: String, Codable {
+    case employee = "EMPLOYEE"
+    case visitor = "VISITOR"
+
+    var label: String {
+        switch self {
+        case .employee: return "社員"
+        case .visitor: return "訪問者"
+        }
+    }
+}
+
 struct FaceUser: Identifiable, Codable {
     let id: String
     let name: String
@@ -10,15 +22,22 @@ struct FaceUser: Identifiable, Codable {
     var faceSignatures: [[Float]]
     var registeredAt: Date
     var lastSeenAt: Date?
+    var userType: FaceUserType
+    var visitPurpose: String?
 
-    init(id: String, name: String, department: String, faceSignatures: [[Float]], registeredAt: Date = Date(), lastSeenAt: Date? = nil) {
+    init(id: String, name: String, department: String, faceSignatures: [[Float]], registeredAt: Date = Date(), lastSeenAt: Date? = nil, userType: FaceUserType = .employee, visitPurpose: String? = nil) {
         self.id = id
         self.name = name
         self.department = department
         self.faceSignatures = faceSignatures
         self.registeredAt = registeredAt
         self.lastSeenAt = lastSeenAt
+        self.userType = userType
+        self.visitPurpose = visitPurpose
     }
+
+    var isVisitor: Bool { userType == .visitor }
+    var displaySubtitle: String { isVisitor ? department : (department.isEmpty ? "本社" : department) }
 
     var initials: String {
         let components = name.components(separatedBy: " ")
@@ -180,6 +199,12 @@ class FaceVectorStore: ObservableObject {
         let addLastSeenAt = "ALTER TABLE Users ADD COLUMN last_seen_at REAL;"
         execute(sql: addLastSeenAt)
 
+        let addUserType = "ALTER TABLE Users ADD COLUMN user_type TEXT DEFAULT 'EMPLOYEE';"
+        execute(sql: addUserType)
+
+        let addVisitPurpose = "ALTER TABLE Users ADD COLUMN visit_purpose TEXT;"
+        execute(sql: addVisitPurpose)
+
         // AttendanceLogs table migrations
         let addType = "ALTER TABLE AttendanceLogs ADD COLUMN type TEXT DEFAULT 'checkIn';"
         execute(sql: addType)
@@ -198,10 +223,11 @@ class FaceVectorStore: ObservableObject {
         var userId = user.id
         var existingUser = false
 
-        let queryUser = "SELECT id FROM Users WHERE name = ? LIMIT 1;"
+        let queryUser = "SELECT id FROM Users WHERE name = ? AND user_type = ? LIMIT 1;"
         var stmt: OpaquePointer?
         if sqlite3_prepare_v2(db, queryUser, -1, &stmt, nil) == SQLITE_OK {
             sqlite3_bind_text(stmt, 1, (user.name as NSString).utf8String, -1, nil)
+            sqlite3_bind_text(stmt, 2, (user.userType.rawValue as NSString).utf8String, -1, nil)
             if sqlite3_step(stmt) == SQLITE_ROW {
                 if let idStr = sqlite3_column_text(stmt, 0) {
                     userId = String(cString: idStr)
@@ -212,12 +238,18 @@ class FaceVectorStore: ObservableObject {
         sqlite3_finalize(stmt)
 
         if !existingUser {
-            let insertUser = "INSERT INTO Users (id, name, department, registered_at) VALUES (?, ?, ?, ?);"
+            let insertUser = "INSERT INTO Users (id, name, department, registered_at, user_type, visit_purpose) VALUES (?, ?, ?, ?, ?, ?);"
             if sqlite3_prepare_v2(db, insertUser, -1, &stmt, nil) == SQLITE_OK {
                 sqlite3_bind_text(stmt, 1, (userId as NSString).utf8String, -1, nil)
                 sqlite3_bind_text(stmt, 2, (user.name as NSString).utf8String, -1, nil)
                 sqlite3_bind_text(stmt, 3, (user.department as NSString).utf8String, -1, nil)
                 sqlite3_bind_double(stmt, 4, user.registeredAt.timeIntervalSince1970)
+                sqlite3_bind_text(stmt, 5, (user.userType.rawValue as NSString).utf8String, -1, nil)
+                if let visitPurpose = user.visitPurpose {
+                    sqlite3_bind_text(stmt, 6, (visitPurpose as NSString).utf8String, -1, nil)
+                } else {
+                    sqlite3_bind_null(stmt, 6)
+                }
                 sqlite3_step(stmt)
             } else {
                 print("Insert User Error: \(String(cString: sqlite3_errmsg(db)))")
@@ -382,6 +414,10 @@ class FaceVectorStore: ObservableObject {
         return .notCheckedIn
     }
 
+    func user(named name: String) -> FaceUser? {
+        users.first { $0.name == name }
+    }
+
     func addLog(name: String, type: String = "checkIn") {
         dbQueue.async { [weak self] in
             self?.addLogSync(name: name, type: type)
@@ -439,7 +475,7 @@ class FaceVectorStore: ObservableObject {
     private func loadUsers() {
         var newUsers: [FaceUser] = []
 
-        let userSql = "SELECT id, name, department, registered_at, last_seen_at FROM Users;"
+        let userSql = "SELECT id, name, department, registered_at, last_seen_at, user_type, visit_purpose FROM Users;"
         var stmt: OpaquePointer?
         if sqlite3_prepare_v2(db, userSql, -1, &stmt, nil) == SQLITE_OK {
             while sqlite3_step(stmt) == SQLITE_ROW {
@@ -454,9 +490,18 @@ class FaceVectorStore: ObservableObject {
                 if sqlite3_column_type(stmt, 4) != SQLITE_NULL {
                     lastSeenAt = Date(timeIntervalSince1970: sqlite3_column_double(stmt, 4))
                 }
+                var userType: FaceUserType = .employee
+                if let typePtr = sqlite3_column_text(stmt, 5),
+                   let parsed = FaceUserType(rawValue: String(cString: typePtr)) {
+                    userType = parsed
+                }
+                var visitPurpose: String? = nil
+                if let purposePtr = sqlite3_column_text(stmt, 6) {
+                    visitPurpose = String(cString: purposePtr)
+                }
 
                 let signatures = loadSignatures(for: id)
-                newUsers.append(FaceUser(id: id, name: name, department: dept, faceSignatures: signatures, registeredAt: registeredAt, lastSeenAt: lastSeenAt))
+                newUsers.append(FaceUser(id: id, name: name, department: dept, faceSignatures: signatures, registeredAt: registeredAt, lastSeenAt: lastSeenAt, userType: userType, visitPurpose: visitPurpose))
             }
         } else {
             let errmsg = String(cString: sqlite3_errmsg(db))

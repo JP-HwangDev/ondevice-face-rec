@@ -205,17 +205,22 @@ class FaceRecognitionViewModel: ObservableObject {
     private let recognitionThreshold = 2 // Need 2 consecutive recognitions
 
     // Precomputed centroid embeddings for faster & more accurate matching
-    private var userCentroidCache: [(name: String, centroid: [Float])] = []
-    private var lastRecognizedName: String = ""
+    private var userCentroidCache: [(user: FaceUser, centroid: [Float])] = []
+    private var lastRecognizedKey: String = ""
 
     struct Candidate: Identifiable, Equatable {
-        var id: String { name }
+        var id: String { userId }
+        let userId: String
         let name: String
+        let department: String
+        let userType: FaceUserType
+        let visitPurpose: String?
         let similarity: Float
         let status: UserAttendanceStatus
+        var isVisitor: Bool { userType == .visitor }
 
         static func == (lhs: Candidate, rhs: Candidate) -> Bool {
-            lhs.name == rhs.name && lhs.similarity == rhs.similarity
+            lhs.userId == rhs.userId && lhs.similarity == rhs.similarity
         }
     }
 
@@ -239,7 +244,7 @@ class FaceRecognitionViewModel: ObservableObject {
     private let processingQueue = DispatchQueue(label: "face.processing.queue", qos: .userInteractive, attributes: .concurrent)
 
     // Precomputed user embeddings for faster matching
-    private var userEmbeddingsCache: [(name: String, embeddings: [[Float]])] = []
+    private var userEmbeddingsCache: [(user: FaceUser, embeddings: [[Float]])] = []
 
     init() {
         // Initialize CIContext with Metal for GPU acceleration
@@ -308,12 +313,12 @@ class FaceRecognitionViewModel: ObservableObject {
     }
 
     private func rebuildEmbeddingsCache() async {
-        userEmbeddingsCache = store.users.map { ($0.name, $0.faceSignatures) }
+        userEmbeddingsCache = store.users.map { ($0, $0.faceSignatures) }
         // Also build centroid cache
         userCentroidCache = store.users.compactMap { user in
             guard !user.faceSignatures.isEmpty else { return nil }
             let centroid = computeCentroid(user.faceSignatures)
-            return (user.name, centroid)
+            return (user, centroid)
         }
     }
 
@@ -560,7 +565,7 @@ class FaceRecognitionViewModel: ObservableObject {
                         self.detectedFaces[index].attendanceStatus = status
 
                         if effectiveSimilarity > 0.85 && hasMargin && !self.isMaskDetected {
-                            self.updateRecognitionHistory(name: best.name)
+                            self.updateRecognitionHistory(candidate: best)
                         }
                     }
                 }
@@ -568,7 +573,10 @@ class FaceRecognitionViewModel: ObservableObject {
         }
     }
 
-    private func updateRecognitionHistory(name: String) {
+    private func updateRecognitionHistory(candidate: Candidate) {
+        guard !candidate.isVisitor else { return }
+
+        let name = candidate.name
         // Increment recognition count
         recognitionHistory[name] = (recognitionHistory[name] ?? 0) + 1
 
@@ -582,8 +590,8 @@ class FaceRecognitionViewModel: ObservableObject {
 
         // Check if stable recognition
         if let count = recognitionHistory[name], count >= recognitionThreshold {
-            if lastRecognizedName != name {
-                lastRecognizedName = name
+            if lastRecognizedKey != candidate.id {
+                lastRecognizedKey = candidate.id
                 recognizedUserName = name
                 shouldAutoAttendance = true
 
@@ -602,7 +610,7 @@ class FaceRecognitionViewModel: ObservableObject {
     func resetAfterRegistration(employeeName: String) {
         shouldAutoAttendance = false
         recognitionHistory.removeAll()
-        lastRecognizedName = employeeName
+        lastRecognizedKey = store.user(named: employeeName)?.id ?? employeeName
     }
 
     private func applySmoothResults(at index: Int, newName: String, newSimilarity: Float, embedding: [Float]) {
@@ -660,12 +668,12 @@ class FaceRecognitionViewModel: ObservableObject {
 
         var allMatches: [Candidate] = []
 
-        for (name, centroid) in userCentroidCache {
+        for (user, centroid) in userCentroidCache {
             let centroidSim = cosineSimilarity(embedding, centroid)
 
             // Best individual sample similarity
             var bestIndividualSim: Float = centroidSim
-            if let sigs = userEmbeddingsCache.first(where: { $0.name == name })?.embeddings {
+            if let sigs = userEmbeddingsCache.first(where: { $0.user.id == user.id })?.embeddings {
                 let sampled = sigs.count > 20 ? Array(sigs.suffix(20)) : sigs
                 for saved in sampled {
                     let sim = cosineSimilarity(embedding, saved)
@@ -675,8 +683,16 @@ class FaceRecognitionViewModel: ObservableObject {
 
             // Weighted blend (more centroid = more stable across frames)
             let blendedSim = centroidSim * centroidWeight + bestIndividualSim * (1.0 - centroidWeight)
-            let status = store.getTodayStatus(for: name)
-            allMatches.append(Candidate(name: name, similarity: blendedSim, status: status))
+            let status = user.isVisitor ? .notCheckedIn : store.getTodayStatus(for: user.name)
+            allMatches.append(Candidate(
+                userId: user.id,
+                name: user.name,
+                department: user.department,
+                userType: user.userType,
+                visitPurpose: user.visitPurpose,
+                similarity: blendedSim,
+                status: status
+            ))
         }
 
         return allMatches.sorted { $0.similarity > $1.similarity }.prefix(count).map { $0 }
@@ -877,6 +893,22 @@ class FaceRecognitionViewModel: ObservableObject {
 
     func finalizeRegistration(name: String) {
         store.saveUser(FaceUser(id: UUID().uuidString, name: name, department: "本社", faceSignatures: tempSignatures))
+        finishRegistration(name: name)
+    }
+
+    func finalizeVisitorRegistration(name: String, company: String, purpose: String) {
+        store.saveUser(FaceUser(
+            id: UUID().uuidString,
+            name: name,
+            department: company,
+            faceSignatures: tempSignatures,
+            userType: .visitor,
+            visitPurpose: purpose
+        ))
+        finishRegistration(name: name)
+    }
+
+    private func finishRegistration(name: String) {
         tempSignatures = []
         registrationProgress = 0
 
@@ -889,6 +921,15 @@ class FaceRecognitionViewModel: ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
             self.authStatus = "顔を認識してください"
         }
+    }
+
+    func currentFrameJPEGBase64() -> String? {
+        guard let buffer = cameraManager.currentBuffer else { return nil }
+        let image = CIImage(cvPixelBuffer: buffer)
+        guard let cgImage = ciContext.createCGImage(image, from: image.extent) else { return nil }
+        let uiImage = UIImage(cgImage: cgImage)
+        guard let data = uiImage.jpegData(compressionQuality: 0.75) else { return nil }
+        return "data:image/jpeg;base64,\(data.base64EncodedString())"
     }
 
     // MARK: - Attendance Actions

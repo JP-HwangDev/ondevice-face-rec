@@ -834,7 +834,7 @@ struct ContentView: View {
                     .foregroundStyle(LinearGradient(colors: [.orange, .red], startPoint: .top, endPoint: .bottom))
 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("マスクを外してください")
+                    Text("顔を正面に向けてください")
                         .font(.system(size: 15, weight: .bold, design: .rounded))
                         .foregroundColor(.white)
                     Text("認証のため、マスクを外してカメラをご覧ください")
@@ -1821,7 +1821,7 @@ struct CameraPreviewView: UIViewRepresentable {
                 // Name label above box — while a mask is detected, always show the
                 // removal prompt here instead of the recognition name/UNKNOWN text.
                 if isMaskDetected || !face.name.isEmpty {
-                    let txt = isMaskDetected ? "マスクを外してください" : (face.name == "未認証" ? "UNKNOWN" : "\(face.name) \(face.score)%")
+                    let txt = isMaskDetected ? "顔を正面に向けてください" : (face.name == "未認証" ? "UNKNOWN" : "\(face.name) \(face.score)%")
                     let tl = CATextLayer()
                     tl.string = txt; tl.fontSize = 13
                     tl.font = UIFont.systemFont(ofSize: 13, weight: .bold)

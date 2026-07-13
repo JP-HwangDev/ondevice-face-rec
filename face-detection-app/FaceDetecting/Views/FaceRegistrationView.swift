@@ -333,7 +333,7 @@ struct FaceRegistrationView: View {
                     Circle()
                         .fill(viewModel.isMaskDetected ? Color.red : (hasFace ? Color.green : Color.orange))
                         .frame(width: 7, height: 7)
-                    Text(viewModel.isMaskDetected ? "マスクを外してください" : (hasFace ? "顔を検出中..." : "カメラに顔を向けてください"))
+                    Text(viewModel.isMaskDetected ? "顔を正面に向けてください" : (hasFace ? "顔を検出中..." : "カメラに顔を向けてください"))
                         .font(.caption)
                         .foregroundColor(viewModel.isMaskDetected ? .red : (hasFace ? .green : .white.opacity(0.7)))
                         .animation(.easeInOut, value: hasFace)
@@ -385,7 +385,7 @@ struct FaceRegistrationView: View {
             HStack(spacing: 10) {
                 Image(systemName: "facemask.fill")
                     .foregroundStyle(LinearGradient(colors: [.orange, .red], startPoint: .top, endPoint: .bottom))
-                Text("マスクを外してください")
+                Text("顔を正面に向けてください")
                     .font(.system(size: 14, weight: .bold, design: .rounded))
                     .foregroundColor(.white)
             }

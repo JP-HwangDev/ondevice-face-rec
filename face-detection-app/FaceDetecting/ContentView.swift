@@ -13,6 +13,8 @@ struct ContentView: View {
     @State private var showingVisitorRegistration = false
     @State private var selectedRegistrationEmployee: Employee? = nil
     @State private var showingSuccessOverlay = false
+    @State private var showingVisitorReceptionAlert = false
+    @State private var visitorReceptionAlertID = UUID()
     @State private var showingPasswordPrompt = false
     @State private var showingStats = false
 
@@ -124,6 +126,10 @@ struct ContentView: View {
                     maskWarningOverlay
                         .zIndex(101)
                 }
+            }
+            .alert("来訪受付完了", isPresented: $showingVisitorReceptionAlert) {
+            } message: {
+                Text("訪問依頼を送信しました。少々お待ちください。\nこの画面は数秒後に自動で閉じます。")
             }
         }
         .ignoresSafeArea()
@@ -721,7 +727,7 @@ struct ContentView: View {
             .buttonStyle(.plain)
 
             Button {
-                showingSettings = true
+                showingPasswordPrompt = true
             } label: {
                 HStack(spacing: 10) {
                     Image(systemName: "person.badge.plus").font(.title3)
@@ -763,11 +769,13 @@ struct ContentView: View {
                 print("[Visitor] revisit API error: \(error)")
             }
         }
-        successKind = .visitorRequest
-        attendanceMessage = "訪問依頼を送信しました。少々お待ちください"
         UINotificationFeedbackGenerator().notificationOccurred(.success)
-        withAnimation(.spring(response: 0.4, dampingFraction: 0.75)) {
-            showingSuccessOverlay = true
+        let alertID = UUID()
+        visitorReceptionAlertID = alertID
+        showingVisitorReceptionAlert = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+            guard visitorReceptionAlertID == alertID else { return }
+            showingVisitorReceptionAlert = false
         }
     }
 

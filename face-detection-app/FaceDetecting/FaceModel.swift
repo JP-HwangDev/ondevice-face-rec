@@ -277,6 +277,34 @@ class FaceVectorStore: ObservableObject {
         loadUsers()
     }
 
+    /// Appends a single confidently-matched embedding to an existing user's signatures,
+    /// e.g. from a successful checkIn/checkOut. Cheaper than saveUser() since it skips the
+    /// name/user_type lookup and re-inserts nothing but the one vector.
+    func appendSignature(userId: String, vector: [Float]) {
+        dbQueue.async { [weak self] in
+            self?.appendSignatureSync(userId: userId, vector: vector)
+        }
+    }
+
+    private func appendSignatureSync(userId: String, vector: [Float]) {
+        let insertVector = "INSERT INTO FaceSignatures (user_id, vector) VALUES (?, ?);"
+        var stmt: OpaquePointer?
+        if sqlite3_prepare_v2(db, insertVector, -1, &stmt, nil) == SQLITE_OK {
+            let data = toData(vector: vector)
+            sqlite3_bind_text(stmt, 1, (userId as NSString).utf8String, -1, nil)
+            _ = data.withUnsafeBytes { rawBuffer in
+                sqlite3_bind_blob(stmt, 2, rawBuffer.baseAddress, Int32(rawBuffer.count), nil)
+            }
+            sqlite3_step(stmt)
+        } else {
+            print("Append Signature Error: \(String(cString: sqlite3_errmsg(db)))")
+        }
+        sqlite3_finalize(stmt)
+
+        limitSignatures(for: userId, maxCount: 200)
+        loadUsers()
+    }
+
     func deleteUser(at offsets: IndexSet) {
         for index in offsets {
             let user = users[index]

@@ -248,7 +248,7 @@ struct FaceRegistrationView: View {
         let guideSize: CGFloat = min(geo.size.width * 0.72, 280)
         let progress = viewModel.registrationProgress
         let hasFace = !viewModel.detectedFaces.isEmpty
-        let sampleCount = Int(progress * 30)
+        let sampleCount = Int(progress * 12)
 
         return VStack(spacing: 0) {
             VStack(spacing: 6) {
@@ -312,7 +312,7 @@ struct FaceRegistrationView: View {
                             .font(.system(size: guideSize * 0.17, weight: .bold, design: .rounded))
                             .foregroundColor(.white)
                             .shadow(color: .black.opacity(0.5), radius: 2)
-                        Text("\(sampleCount) / 30")
+                        Text("\(sampleCount) / 12")
                             .font(.system(size: guideSize * 0.075, weight: .medium))
                             .foregroundColor(.white.opacity(0.55))
                     } else {

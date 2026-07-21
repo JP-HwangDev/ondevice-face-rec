@@ -172,7 +172,7 @@ class FaceRecognitionViewModel: ObservableObject {
     @Published var bufferSize: CGSize = .zero
 
     private var tempSignatures: [[Float]] = []
-    private let requiredSamples = 30
+    private let requiredSamples = 12
     private var lastSampleTime: Date = Date()
     private var lastSampleYaw: Float? = nil
     private var lastSamplePitch: Float? = nil
@@ -203,6 +203,11 @@ class FaceRecognitionViewModel: ObservableObject {
     // Recognition stabilization
     private var recognitionHistory: [String: Int] = [:]
     private let recognitionThreshold = 2 // Need 2 consecutive recognitions
+
+    // The embedding/user behind the most recent high-confidence recognition, held so it
+    // can be folded into the user's stored signatures once checkIn/checkOut actually commits.
+    private var pendingAttendanceUserId: String?
+    private var pendingAttendanceEmbedding: [Float]?
 
     // Precomputed centroid embeddings for faster & more accurate matching
     private var userCentroidCache: [(user: FaceUser, centroid: [Float])] = []
@@ -565,7 +570,7 @@ class FaceRecognitionViewModel: ObservableObject {
                         self.detectedFaces[index].attendanceStatus = status
 
                         if effectiveSimilarity > 0.85 && hasMargin && !self.isMaskDetected {
-                            self.updateRecognitionHistory(candidate: best)
+                            self.updateRecognitionHistory(candidate: best, embedding: embedding)
                         }
                     }
                 }
@@ -573,7 +578,7 @@ class FaceRecognitionViewModel: ObservableObject {
         }
     }
 
-    private func updateRecognitionHistory(candidate: Candidate) {
+    private func updateRecognitionHistory(candidate: Candidate, embedding: [Float]) {
         guard !candidate.isVisitor else { return }
 
         let name = candidate.name
@@ -593,6 +598,10 @@ class FaceRecognitionViewModel: ObservableObject {
             if lastRecognizedKey != candidate.id {
                 lastRecognizedKey = candidate.id
                 recognizedUserName = name
+                // Kept for the checkIn/checkOut that follows, so the confidently-matched
+                // frame can be folded back into the user's stored signatures.
+                pendingAttendanceUserId = candidate.userId
+                pendingAttendanceEmbedding = embedding
                 shouldAutoAttendance = true
 
                 // Haptic feedback
@@ -605,6 +614,8 @@ class FaceRecognitionViewModel: ObservableObject {
     func resetAutoAttendance() {
         shouldAutoAttendance = false
         recognitionHistory.removeAll()
+        pendingAttendanceUserId = nil
+        pendingAttendanceEmbedding = nil
     }
 
     func resetAfterRegistration(employeeName: String) {
@@ -942,9 +953,11 @@ class FaceRecognitionViewModel: ObservableObject {
         case .notCheckedIn:
             store.checkIn(userName: recognizedUserName)
             authStatus = "\(recognizedUserName)さん 出勤しました"
+            saveAttendanceEmbeddingIfAvailable()
         case .checkedIn:
             store.checkOut(userName: recognizedUserName)
             authStatus = "\(recognizedUserName)さん 退勤しました"
+            saveAttendanceEmbeddingIfAvailable()
         case .checkedOut:
             authStatus = "\(recognizedUserName)さんは既に退勤済みです"
         }
@@ -958,6 +971,15 @@ class FaceRecognitionViewModel: ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
             self.authStatus = "顔を認識してください"
         }
+    }
+
+    /// Folds the embedding behind this attendance event back into the user's stored
+    /// signatures, so recognition keeps adapting (lighting, aging, angle) without requiring
+    /// a long re-registration. Only called for high-confidence matches (see
+    /// updateRecognitionHistory), so misrecognitions can't poison the stored signatures.
+    private func saveAttendanceEmbeddingIfAvailable() {
+        guard let userId = pendingAttendanceUserId, let embedding = pendingAttendanceEmbedding else { return }
+        store.appendSignature(userId: userId, vector: embedding)
     }
 
     // MARK: - Backup & Restore

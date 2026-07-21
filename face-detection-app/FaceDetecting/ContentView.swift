@@ -1236,6 +1236,7 @@ struct SettingsView: View {
     @State private var selectedRegistrationEmployee: Employee? = nil
     @State private var showingConsent = false
     @State private var pendingConsentEmployeeName: String = ""
+    @State private var pendingFaceDeleteUser: FaceUser? = nil
 
     var body: some View {
         NavigationStack {
@@ -1279,6 +1280,24 @@ struct SettingsView: View {
                 Button("OK", role: .cancel) { }
             } message: {
                 Text(alertMessage)
+            }
+            .confirmationDialog(
+                "\(pendingFaceDeleteUser?.name ?? "")さんの顔データを削除しますか?",
+                isPresented: Binding(
+                    get: { pendingFaceDeleteUser != nil },
+                    set: { if !$0 { pendingFaceDeleteUser = nil } }
+                ),
+                titleVisibility: .visible
+            ) {
+                Button("削除", role: .destructive) {
+                    deleteFaceData(for: pendingFaceDeleteUser)
+                    pendingFaceDeleteUser = nil
+                }
+                Button("キャンセル", role: .cancel) {
+                    pendingFaceDeleteUser = nil
+                }
+            } message: {
+                Text("この操作は取り消せません。再度顔登録が必要になります。")
             }
             .fullScreenCover(isPresented: $showingFaceRegistration) {
                 FaceRegistrationView(viewModel: viewModel, preselectedEmployee: selectedRegistrationEmployee)
@@ -1429,6 +1448,15 @@ struct SettingsView: View {
                             MemberCardRow(employee: employee, faceUser: faceUser)
                         }
                         .buttonStyle(.plain)
+                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                            if let faceUser {
+                                Button(role: .destructive) {
+                                    pendingFaceDeleteUser = faceUser
+                                } label: {
+                                    Label("顔データ削除", systemImage: "trash")
+                                }
+                            }
+                        }
                     }
                 }
                 .listStyle(.insetGrouped)
@@ -1693,6 +1721,13 @@ struct SettingsView: View {
             alertMessage = "ファイル選択に失敗しました: \(error.localizedDescription)"
             showAlert = true
         }
+    }
+
+    private func deleteFaceData(for user: FaceUser?) {
+        guard let user, let index = viewModel.store.users.firstIndex(where: { $0.id == user.id }) else { return }
+        viewModel.store.deleteUser(at: IndexSet(integer: index))
+        alertMessage = "\(user.name)さんの顔データを削除しました"
+        showAlert = true
     }
 }
 

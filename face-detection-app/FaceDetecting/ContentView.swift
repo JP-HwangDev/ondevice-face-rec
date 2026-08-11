@@ -35,9 +35,33 @@ struct ContentView: View {
     @State private var showingConsent = false
     @State private var pendingConsentEmployeeName: String = ""
 
+    @State private var deviceIPAddress: String? = nil
+
     private let settingsPassword = "20170201"
 
     let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
+    let ipRefreshTimer = Timer.publish(every: 60, on: .main, in: .common).autoconnect()
+
+    /// The public (WAN) IP as seen from outside the local network — this is what the
+    /// backend actually records for setUserWorkIn/setUserWorkOut, since the device's own
+    /// local Wi-Fi IP (192.168.x.x) is hidden behind NAT and never reaches the server.
+    private func refreshDeviceIPAddress() {
+        guard let url = URL(string: "https://api.ipify.org?format=json") else { return }
+        Task {
+            struct IPResponse: Decodable { let ip: String }
+            do {
+                var request = URLRequest(url: url)
+                request.timeoutInterval = 8
+                let (data, _) = try await URLSession.shared.data(for: request)
+                let decoded = try JSONDecoder().decode(IPResponse.self, from: data)
+                await MainActor.run {
+                    if deviceIPAddress != decoded.ip { deviceIPAddress = decoded.ip }
+                }
+            } catch {
+                print("[ContentView] refreshDeviceIPAddress error: \(error)")
+            }
+        }
+    }
 
     private var safeAreaTop: CGFloat {
         UIApplication.shared.connectedScenes
@@ -134,8 +158,10 @@ struct ContentView: View {
         }
         .ignoresSafeArea()
         .onReceive(timer) { _ in currentTime = Date() }
+        .onReceive(ipRefreshTimer) { _ in refreshDeviceIPAddress() }
         .onAppear {
             withAnimation(.easeInOut(duration: 0.8).repeatForever()) { isScanning = true }
+            refreshDeviceIPAddress()
         }
         .sheet(isPresented: $showingSettings) {
             SettingsView(viewModel: viewModel)
@@ -302,6 +328,21 @@ struct ContentView: View {
             }
 
             Spacer()
+
+            if let ip = deviceIPAddress {
+                HStack(spacing: 6) {
+                    Image(systemName: "wifi")
+                        .font(.system(size: 12, weight: .semibold))
+                    Text(ip)
+                        .font(.system(size: 14, weight: .semibold, design: .monospaced))
+                }
+                .foregroundColor(.white.opacity(0.9))
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(.ultraThinMaterial)
+                .clipShape(Capsule())
+                .padding(.trailing, 8)
+            }
 
             Button {
                 showingStats = true
@@ -883,6 +924,10 @@ struct ContentView: View {
         withAnimation(.spring(response: 0.4, dampingFraction: 0.75)) {
             showingSuccessOverlay = true
         }
+        // Fold this confirmed match's embedding back into the person's stored
+        // signatures so future recognition (lighting, angle, glasses on/off) keeps
+        // improving without needing a full re-registration.
+        viewModel.saveAttendanceEmbedding(for: name)
         viewModel.resetAutoAttendance()
         Task {
             if let emp = apiService.employee(named: name) {
@@ -1012,7 +1057,7 @@ struct StatsView: View {
 // MARK: - Member Card Row
 struct MemberCardRow: View {
     let employee: Employee
-    let faceUser: FaceUser?
+    let faceUserCount: Int
 
     private var serverStatus: ServerAttendanceStatus { employee.serverStatus }
 
@@ -1024,7 +1069,7 @@ struct MemberCardRow: View {
                     .stroke(statusColor.opacity(0.5), lineWidth: 2)
                     .frame(width: 50, height: 50)
                 Circle()
-                    .fill(faceUser != nil
+                    .fill(faceUserCount > 0
                         ? LinearGradient(colors: [.blue, .indigo], startPoint: .topLeading, endPoint: .bottomTrailing)
                         : LinearGradient(colors: [Color(.systemGray4), Color(.systemGray5)], startPoint: .topLeading, endPoint: .bottomTrailing))
                     .frame(width: 44, height: 44)
@@ -1072,12 +1117,12 @@ struct MemberCardRow: View {
                 }
 
                 // Face registration badge
-                if faceUser != nil {
+                if faceUserCount > 0 {
                     HStack(spacing: 3) {
                         Image(systemName: "checkmark.circle.fill")
                             .font(.system(size: 10))
                             .foregroundColor(.blue.opacity(0.7))
-                        Text("顔登録済")
+                        Text(faceUserCount > 1 ? "顔登録済 (\(faceUserCount))" : "顔登録済")
                             .font(.system(size: 10))
                             .foregroundColor(.blue.opacity(0.7))
                     }
@@ -1236,7 +1281,7 @@ struct SettingsView: View {
     @State private var selectedRegistrationEmployee: Employee? = nil
     @State private var showingConsent = false
     @State private var pendingConsentEmployeeName: String = ""
-    @State private var pendingFaceDeleteUser: FaceUser? = nil
+    @State private var pendingFaceDeleteCandidates: [FaceUser] = []
 
     var body: some View {
         NavigationStack {
@@ -1282,22 +1327,29 @@ struct SettingsView: View {
                 Text(alertMessage)
             }
             .confirmationDialog(
-                "\(pendingFaceDeleteUser?.name ?? "")さんの顔データを削除しますか?",
+                "\(pendingFaceDeleteCandidates.first?.name ?? "")さんの顔データを削除しますか?",
                 isPresented: Binding(
-                    get: { pendingFaceDeleteUser != nil },
-                    set: { if !$0 { pendingFaceDeleteUser = nil } }
+                    get: { !pendingFaceDeleteCandidates.isEmpty },
+                    set: { if !$0 { pendingFaceDeleteCandidates = [] } }
                 ),
                 titleVisibility: .visible
             ) {
-                Button("削除", role: .destructive) {
-                    deleteFaceData(for: pendingFaceDeleteUser)
-                    pendingFaceDeleteUser = nil
+                // A person can have multiple face-data entries (e.g. registered once
+                // without glasses, once with) — list each individually so one can be
+                // removed without deleting the others.
+                ForEach(pendingFaceDeleteCandidates) { user in
+                    Button("削除: \(user.registeredAt.formatted(date: .abbreviated, time: .shortened))", role: .destructive) {
+                        deleteFaceData(for: user)
+                        pendingFaceDeleteCandidates = []
+                    }
                 }
                 Button("キャンセル", role: .cancel) {
-                    pendingFaceDeleteUser = nil
+                    pendingFaceDeleteCandidates = []
                 }
             } message: {
-                Text("この操作は取り消せません。再度顔登録が必要になります。")
+                Text(pendingFaceDeleteCandidates.count > 1
+                     ? "削除するデータを選んでください。この操作は取り消せません。"
+                     : "この操作は取り消せません。再度顔登録が必要になります。")
             }
             .fullScreenCover(isPresented: $showingFaceRegistration) {
                 FaceRegistrationView(viewModel: viewModel, preselectedEmployee: selectedRegistrationEmployee)
@@ -1440,18 +1492,18 @@ struct SettingsView: View {
             } else {
                 List {
                     ForEach(apiService.employees) { employee in
-                        let faceUser = viewModel.store.users.first(where: { !$0.isVisitor && $0.name == employee.userName })
+                        let faceUsers = viewModel.store.users.filter { !$0.isVisitor && $0.name == employee.userName }
                         Button {
                             pendingConsentEmployeeName = employee.userName
                             showingConsent = true
                         } label: {
-                            MemberCardRow(employee: employee, faceUser: faceUser)
+                            MemberCardRow(employee: employee, faceUserCount: faceUsers.count)
                         }
                         .buttonStyle(.plain)
                         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                            if let faceUser {
+                            if !faceUsers.isEmpty {
                                 Button(role: .destructive) {
-                                    pendingFaceDeleteUser = faceUser
+                                    pendingFaceDeleteCandidates = faceUsers
                                 } label: {
                                     Label("顔データ削除", systemImage: "trash")
                                 }

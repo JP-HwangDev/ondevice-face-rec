@@ -21,6 +21,8 @@ class CameraManager: NSObject, ObservableObject {
     let session = AVCaptureSession()
     private let videoOutput = AVCaptureVideoDataOutput()
     private let queue = DispatchQueue(label: "camera.queue", qos: .userInteractive)
+    private var rotationCoordinator: AVCaptureDevice.RotationCoordinator?
+    private var rotationObservation: NSKeyValueObservation?
 
     private var frameSkipCounter = 0
     private let frameSkipInterval = 2 // Every 2nd frame — faster recognition, still saves some CPU
@@ -48,29 +50,31 @@ class CameraManager: NSObject, ObservableObject {
             }
         default: self.isAuthorized = false
         }
-        
-        // Setup orientation tracking
-        NotificationCenter.default.addObserver(self, selector: #selector(updateOrientation), name: UIDevice.orientationDidChangeNotification, object: nil)
-        updateOrientation()
     }
 
-    @objc private func updateOrientation() {
-        let newAngle: CGFloat
-        switch UIDevice.current.orientation {
-        case .portrait: newAngle = 90
-        case .portraitUpsideDown: newAngle = 270
-        case .landscapeLeft: newAngle = 180  // swap for front camera
-        case .landscapeRight: newAngle = 0   // swap for front camera
-        default: return
-        }
-        if rotationAngle != newAngle {
-            rotationAngle = newAngle
-            videoOutput.connection(with: .video)?.videoRotationAngle = newAngle
+    // Front-camera sensor mounting differs between iPhone and iPad, so a fixed
+    // UIDevice-orientation → angle table (tuned for iPhone) ends up upside-down
+    // on iPad. RotationCoordinator asks the system for the correct angle per device.
+    private func setupRotationCoordinator(for device: AVCaptureDevice) {
+        let coordinator = AVCaptureDevice.RotationCoordinator(device: device, previewLayer: nil)
+        rotationCoordinator = coordinator
+
+        let angle = coordinator.videoRotationAngleForHorizonLevelCapture
+        rotationAngle = angle
+        videoOutput.connection(with: .video)?.videoRotationAngle = angle
+
+        rotationObservation = coordinator.observe(\.videoRotationAngleForHorizonLevelCapture, options: [.new]) { [weak self] _, change in
+            guard let self, let newAngle = change.newValue else { return }
+            DispatchQueue.main.async {
+                self.rotationAngle = newAngle
+                self.videoOutput.connection(with: .video)?.videoRotationAngle = newAngle
+            }
         }
     }
 
     private func setupSession() {
         session.beginConfiguration()
+        defer { session.commitConfiguration() }
         session.sessionPreset = .hd1280x720
         session.automaticallyConfiguresApplicationAudioSession = false
 
@@ -95,13 +99,11 @@ class CameraManager: NSObject, ObservableObject {
         videoOutput.setSampleBufferDelegate(self, queue: queue)
         if session.canAddOutput(videoOutput) { session.addOutput(videoOutput) }
         if let connection = videoOutput.connection(with: .video) {
-            connection.videoRotationAngle = 90
             connection.isVideoMirrored = true
         }
-        
+        setupRotationCoordinator(for: device)
+
         NotificationCenter.default.addObserver(self, selector: #selector(sessionRuntimeError), name: AVCaptureSession.runtimeErrorNotification, object: session)
-        
-        session.commitConfiguration()
     }
     
     @objc func sessionRuntimeError(notification: NSNotification) {
@@ -517,16 +519,42 @@ class FaceRecognitionViewModel: ObservableObject {
         // causing false positives that never cleared. The chin tip just below the mouth
         // is bare skin on an unmasked face and should closely match the forehead — but
         // gets covered by fabric the moment a mask is worn.
-        let lowerFaceRegion = regionRect(x: 0.35...0.65, y: 0.02...0.12)      // chin tip, below the lips
-        let referenceSkinRegion = regionRect(x: 0.30...0.70, y: 0.78...0.92) // forehead
+        //
+        // Both regions are pulled in from the box edges: the old forehead patch sat right
+        // at the top of the box and regularly sampled hairline/bangs instead of skin
+        // (contaminating the reference color for anyone with visible bangs), and the old
+        // chin patch sat right at the bottom edge, which can land on exposed neck below a
+        // loosely worn mask, or on chin shadow when unmasked.
+        let lowerFaceRegion = regionRect(x: 0.38...0.62, y: 0.06...0.16)      // chin, pulled up from the box edge
+        let referenceSkinRegion = regionRect(x: 0.38...0.62, y: 0.60...0.74) // mid-forehead, below the hairline
 
         guard let lower = averageColor(of: ciImage, in: lowerFaceRegion),
               let reference = averageColor(of: ciImage, in: referenceSkinRegion) else { return false }
 
-        let dr = lower.r - reference.r
-        let dg = lower.g - reference.g
-        let db = lower.b - reference.b
-        return sqrt(dr * dr + dg * dg + db * db) > maskColorDistanceThreshold
+        // Compare chromaticity (brightness-normalized color ratios), not raw RGB. Shadow
+        // and lighting angle alone can shift the chin patch's brightness a lot relative to
+        // the forehead patch on a completely bare face, which was swamping the raw-RGB
+        // distance and causing false positives. Mask fabric genuinely differs in hue from
+        // skin, and that difference survives after brightness is normalized out.
+        guard let lowerChroma = chromaticity(of: lower),
+              let referenceChroma = chromaticity(of: reference) else { return false }
+
+        let dr = lowerChroma.r - referenceChroma.r
+        let dg = lowerChroma.g - referenceChroma.g
+        return sqrt(dr * dr + dg * dg) * chromaScale > maskColorDistanceThreshold
+    }
+
+    // Scales the ~0...1 chromaticity distance back up to roughly the old raw-RGB
+    // distance's range, so the existing slider (10...60) and any saved user defaults
+    // still mean approximately what they used to.
+    private let chromaScale: Float = 300
+
+    private func chromaticity(of color: (r: Float, g: Float, b: Float)) -> (r: Float, g: Float)? {
+        let total = color.r + color.g + color.b
+        // Too dark for the ratio to be meaningful — treat as inconclusive rather than
+        // let sensor noise dominate the normalized result.
+        guard total > 30 else { return nil }
+        return (color.r / total, color.g / total)
     }
 
     private func averageColor(of image: CIImage, in rect: CGRect) -> (r: Float, g: Float, b: Float)? {
@@ -953,11 +981,11 @@ class FaceRecognitionViewModel: ObservableObject {
         case .notCheckedIn:
             store.checkIn(userName: recognizedUserName)
             authStatus = "\(recognizedUserName)さん 出勤しました"
-            saveAttendanceEmbeddingIfAvailable()
+            saveAttendanceEmbedding(for: recognizedUserName)
         case .checkedIn:
             store.checkOut(userName: recognizedUserName)
             authStatus = "\(recognizedUserName)さん 退勤しました"
-            saveAttendanceEmbeddingIfAvailable()
+            saveAttendanceEmbedding(for: recognizedUserName)
         case .checkedOut:
             authStatus = "\(recognizedUserName)さんは既に退勤済みです"
         }
@@ -973,12 +1001,18 @@ class FaceRecognitionViewModel: ObservableObject {
         }
     }
 
-    /// Folds the embedding behind this attendance event back into the user's stored
-    /// signatures, so recognition keeps adapting (lighting, aging, angle) without requiring
-    /// a long re-registration. Only called for high-confidence matches (see
-    /// updateRecognitionHistory), so misrecognitions can't poison the stored signatures.
-    private func saveAttendanceEmbeddingIfAvailable() {
-        guard let userId = pendingAttendanceUserId, let embedding = pendingAttendanceEmbedding else { return }
+    /// Folds the embedding behind a confirmed attendance event back into that person's
+    /// stored signatures, so recognition keeps adapting (lighting, aging, angle, glasses)
+    /// without requiring a full re-registration. Only called for high-confidence matches
+    /// (see updateRecognitionHistory), so misrecognitions can't poison the stored
+    /// signatures — and only applied when `name` actually matches who the pending
+    /// embedding was captured for, since the confirmed name can differ from the primarily
+    /// tracked face (e.g. picking a secondary candidate from the list), and saving the
+    /// wrong embedding would corrupt that person's stored signatures.
+    func saveAttendanceEmbedding(for name: String) {
+        guard let userId = pendingAttendanceUserId,
+              let embedding = pendingAttendanceEmbedding,
+              store.users.first(where: { $0.id == userId })?.name == name else { return }
         store.appendSignature(userId: userId, vector: embedding)
     }
 

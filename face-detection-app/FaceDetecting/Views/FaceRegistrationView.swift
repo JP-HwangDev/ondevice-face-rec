@@ -126,7 +126,15 @@ struct FaceRegistrationView: View {
             }
         }
         .navigationTitle("社員を選択")
-        .task { await apiService.loadEmployees() }
+        .task {
+            // Members list (ContentView) already loads this at launch — re-fetching here
+            // on every registration open shares APIService's errorMessage/isLoading with
+            // that list screen, so a transient failure of this redundant call was leaking
+            // into the Members tab as a full connection-error screen after registration.
+            if apiService.employees.isEmpty {
+                await apiService.loadEmployees()
+            }
+        }
     }
 
     private var visitorFormView: some View {

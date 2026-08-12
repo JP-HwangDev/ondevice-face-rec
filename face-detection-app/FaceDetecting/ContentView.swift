@@ -35,30 +35,48 @@ struct ContentView: View {
     @State private var showingConsent = false
     @State private var pendingConsentEmployeeName: String = ""
 
-    @State private var deviceIPAddress: String? = nil
+    @State private var deviceIPv4Address: String? = nil
+    @State private var deviceIPv6Address: String? = nil
 
     private let settingsPassword = "20170201"
 
     let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
     let ipRefreshTimer = Timer.publish(every: 60, on: .main, in: .common).autoconnect()
 
-    /// The public (WAN) IP as seen from outside the local network — this is what the
+    /// The public (WAN) IPv4 and IPv6 as seen from outside the local network — this is what the
     /// backend actually records for setUserWorkIn/setUserWorkOut, since the device's own
     /// local Wi-Fi IP (192.168.x.x) is hidden behind NAT and never reaches the server.
+    /// v4 and v6 are queried separately (api.ipify.org / api6.ipify.org) since a dual-stack
+    /// endpoint only returns one address per request. A given query naturally fails/times out
+    /// on a network that doesn't route that protocol, so each side updates independently.
     private func refreshDeviceIPAddress() {
-        guard let url = URL(string: "https://api64.ipify.org?format=json") else { return }
-        Task {
-            struct IPResponse: Decodable { let ip: String }
+        struct IPResponse: Decodable { let ip: String }
+
+        func fetchIP(from urlString: String) async -> String? {
+            guard let url = URL(string: urlString) else { return nil }
             do {
                 var request = URLRequest(url: url)
                 request.timeoutInterval = 8
                 let (data, _) = try await URLSession.shared.data(for: request)
-                let decoded = try JSONDecoder().decode(IPResponse.self, from: data)
-                await MainActor.run {
-                    if deviceIPAddress != decoded.ip { deviceIPAddress = decoded.ip }
-                }
+                return try JSONDecoder().decode(IPResponse.self, from: data).ip
             } catch {
-                print("[ContentView] refreshDeviceIPAddress error: \(error)")
+                print("[ContentView] refreshDeviceIPAddress error (\(urlString)): \(error)")
+                return nil
+            }
+        }
+
+        Task {
+            if let ip = await fetchIP(from: "https://api.ipify.org?format=json") {
+                await MainActor.run {
+                    if deviceIPv4Address != ip { deviceIPv4Address = ip }
+                }
+            }
+        }
+        Task {
+            if let ip = await fetchIP(from: "https://api6.ipify.org?format=json") {
+                await MainActor.run {
+                    if deviceIPv6Address != ip { deviceIPv6Address = ip }
+                }
             }
         }
     }
@@ -329,18 +347,27 @@ struct ContentView: View {
 
             Spacer()
 
-            if let ip = deviceIPAddress {
-                HStack(spacing: 6) {
+            if deviceIPv4Address != nil || deviceIPv6Address != nil {
+                HStack(alignment: .center, spacing: 6) {
                     Image(systemName: "wifi")
                         .font(.system(size: 12, weight: .semibold))
-                    Text(ip)
-                        .font(.system(size: 14, weight: .semibold, design: .monospaced))
+
+                    VStack(alignment: .leading, spacing: 1) {
+                        if let ip = deviceIPv4Address {
+                            Text("v4  \(ip)")
+                                .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                        }
+                        if let ip = deviceIPv6Address {
+                            Text("v6  \(ip)")
+                                .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                        }
+                    }
                 }
                 .foregroundColor(.white.opacity(0.9))
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
                 .background(.ultraThinMaterial)
-                .clipShape(Capsule())
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                 .padding(.trailing, 8)
             }
 

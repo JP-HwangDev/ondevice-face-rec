@@ -3,6 +3,7 @@ import AVFoundation
 import UniformTypeIdentifiers
 import Combine
 import Charts
+import Darwin
 
 struct ContentView: View {
     @StateObject var viewModel = FaceRecognitionViewModel()
@@ -43,42 +44,39 @@ struct ContentView: View {
     let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
     let ipRefreshTimer = Timer.publish(every: 60, on: .main, in: .common).autoconnect()
 
-    /// The public (WAN) IPv4 and IPv6 as seen from outside the local network — this is what the
-    /// backend actually records for setUserWorkIn/setUserWorkOut, since the device's own
-    /// local Wi-Fi IP (192.168.x.x) is hidden behind NAT and never reaches the server.
-    /// v4 and v6 are queried separately (api.ipify.org / api6.ipify.org) since a dual-stack
-    /// endpoint only returns one address per request. A given query naturally fails/times out
-    /// on a network that doesn't route that protocol, so each side updates independently.
+    /// Reads the Wi-Fi interface's (en0) own addresses directly instead of asking an external
+    /// service. IPv4 is always NAT'd behind the office router, so an external lookup only ever
+    /// returns the router's shared public IP (e.g. 59.128.x.x) — never the device's own
+    /// 192.168.x.x address. IPv6 has no NAT, so the interface's global address is already the
+    /// same one the backend sees. Link-local (fe80::) addresses are skipped for v6.
     private func refreshDeviceIPAddress() {
-        struct IPResponse: Decodable { let ip: String }
+        var v4: String? = nil
+        var v6: String? = nil
 
-        func fetchIP(from urlString: String) async -> String? {
-            guard let url = URL(string: urlString) else { return nil }
-            do {
-                var request = URLRequest(url: url)
-                request.timeoutInterval = 8
-                let (data, _) = try await URLSession.shared.data(for: request)
-                return try JSONDecoder().decode(IPResponse.self, from: data).ip
-            } catch {
-                print("[ContentView] refreshDeviceIPAddress error (\(urlString)): \(error)")
-                return nil
+        var ifaddrPtr: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&ifaddrPtr) == 0, let firstAddr = ifaddrPtr else { return }
+        defer { freeifaddrs(ifaddrPtr) }
+
+        for ptr in sequence(first: firstAddr, next: { $0.pointee.ifa_next }) {
+            let interface = ptr.pointee
+            guard String(cString: interface.ifa_name) == "en0" else { continue }
+
+            let family = interface.ifa_addr.pointee.sa_family
+            var hostname = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            let result = getnameinfo(interface.ifa_addr, socklen_t(interface.ifa_addr.pointee.sa_len),
+                                      &hostname, socklen_t(hostname.count), nil, 0, NI_NUMERICHOST)
+            guard result == 0 else { continue }
+            let address = String(cString: hostname)
+
+            if family == UInt8(AF_INET) {
+                v4 = address
+            } else if family == UInt8(AF_INET6), !address.hasPrefix("fe80:") {
+                v6 = address
             }
         }
 
-        Task {
-            if let ip = await fetchIP(from: "https://api.ipify.org?format=json") {
-                await MainActor.run {
-                    if deviceIPv4Address != ip { deviceIPv4Address = ip }
-                }
-            }
-        }
-        Task {
-            if let ip = await fetchIP(from: "https://api6.ipify.org?format=json") {
-                await MainActor.run {
-                    if deviceIPv6Address != ip { deviceIPv6Address = ip }
-                }
-            }
-        }
+        if deviceIPv4Address != v4 { deviceIPv4Address = v4 }
+        if deviceIPv6Address != v6 { deviceIPv6Address = v6 }
     }
 
     private var safeAreaTop: CGFloat {

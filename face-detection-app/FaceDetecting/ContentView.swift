@@ -46,7 +46,7 @@ struct ContentView: View {
     /// backend actually records for setUserWorkIn/setUserWorkOut, since the device's own
     /// local Wi-Fi IP (192.168.x.x) is hidden behind NAT and never reaches the server.
     private func refreshDeviceIPAddress() {
-        guard let url = URL(string: "https://api.ipify.org?format=json") else { return }
+        guard let url = URL(string: "https://api64.ipify.org?format=json") else { return }
         Task {
             struct IPResponse: Decodable { let ip: String }
             do {

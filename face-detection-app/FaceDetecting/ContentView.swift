@@ -24,6 +24,10 @@ struct ContentView: View {
     @State private var pendingType: AttendanceType = .checkIn
     @State private var showingCandidateConfirm = false
 
+    // Early check-in time choice (before 09:00)
+    @State private var showingEarlyCheckInChoice = false
+    @State private var pendingEarlyCheckInName: String = ""
+
     @State private var attendanceMessage = ""
     @State private var attendanceType: AttendanceType = .checkIn
     @State private var successKind: SuccessKind = .attendance
@@ -256,6 +260,17 @@ struct ContentView: View {
             Button("キャンセル", role: .cancel) {}
         } message: {
             Text("\(pendingName)さん、\(pendingType == .checkIn ? "出勤" : "退勤")しますか？")
+        }
+        .confirmationDialog("出勤時刻を選択してください", isPresented: $showingEarlyCheckInChoice, titleVisibility: .visible) {
+            Button("現在時刻（\(timeString(Date()))）で出勤") {
+                performAttendance(name: pendingEarlyCheckInName, type: .checkIn, checkInDate: Date())
+            }
+            Button("9:00で出勤") {
+                performAttendance(name: pendingEarlyCheckInName, type: .checkIn, checkInDate: nineAMToday())
+            }
+            Button("キャンセル", role: .cancel) {}
+        } message: {
+            Text("現在9時前です。出勤時刻を選んでください")
         }
         .task {
             await apiService.loadEmployees()
@@ -935,11 +950,40 @@ struct ContentView: View {
     }
 
     // MARK: - Helper Methods
+    private func nineAMToday() -> Date {
+        Calendar.current.date(bySettingHour: 9, minute: 0, second: 0, of: Date()) ?? Date()
+    }
+
+    private func timeString(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm"
+        formatter.locale = Locale(identifier: "ja_JP")
+        return formatter.string(from: date)
+    }
+
+    /// Full "yyyy-MM-dd HH:mm:ss" datetime, for the workIn value sent to the server API
+    /// (the backend stores this directly into a DATETIME column, so a bare "HH:mm" is rejected).
+    private func apiTimeString(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        return formatter.string(from: date)
+    }
+
     private func executeAttendance(name: String, type: AttendanceType) {
+        if type == .checkIn, Date() < nineAMToday() {
+            pendingEarlyCheckInName = name
+            showingEarlyCheckInChoice = true
+            return
+        }
+        performAttendance(name: name, type: type, checkInDate: Date())
+    }
+
+    private func performAttendance(name: String, type: AttendanceType, checkInDate: Date) {
         successKind = .attendance
         attendanceType = type
         if type == .checkIn {
-            viewModel.store.checkIn(userName: name)
+            viewModel.store.checkIn(userName: name, at: checkInDate)
             attendanceMessage = "\(name)さんの出勤を記録しました"
         } else {
             viewModel.store.checkOut(userName: name)
@@ -958,7 +1002,7 @@ struct ContentView: View {
             if let emp = apiService.employee(named: name) {
                 do {
                     if type == .checkIn {
-                        try await apiService.setWorkIn(userNo: emp.userNo, userName: emp.userName)
+                        try await apiService.setWorkIn(userNo: emp.userNo, userName: emp.userName, workIn: apiTimeString(checkInDate))
                     } else {
                         try await apiService.setWorkOut(userNo: emp.userNo, userName: emp.userName)
                     }

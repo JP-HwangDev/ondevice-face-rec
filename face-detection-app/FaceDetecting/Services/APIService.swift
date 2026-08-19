@@ -10,6 +10,7 @@ class APIService: ObservableObject {
     @Published var errorMessage: String?
 
     private let baseURL = "https://flowing-typically-mole.ngrok-free.app/api"
+//     private let baseURL = "http:192.168.12.7:9000/api"
     private let apiKey = "111"
 
     private init() {}
@@ -45,16 +46,21 @@ class APIService: ObservableObject {
 
     // MARK: - Work In (출근)
 
-    func setWorkIn(userNo: String, userName: String) async throws {
+    func setWorkIn(userNo: String, userName: String, workIn: String? = nil) async throws {
         guard let url = URL(string: "\(baseURL)/v1/setUserWorkIn") else {
             throw APIError.invalidURL
+        }
+
+        var body = ["userNo": userNo, "userName": userName]
+        if let workIn {
+            body["workIn"] = workIn
         }
 
         var request = URLRequest(url: url)
         request.httpMethod = "PUT"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(apiKey, forHTTPHeaderField: "API-KEY")
-        request.httpBody = try JSONEncoder().encode(["userNo": userNo, "userName": userName])
+        request.httpBody = try JSONEncoder().encode(body)
         request.timeoutInterval = 10
 
         let (data, response) = try await URLSession.shared.data(for: request)

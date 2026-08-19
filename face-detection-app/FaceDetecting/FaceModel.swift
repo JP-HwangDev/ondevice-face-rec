@@ -361,9 +361,9 @@ class FaceVectorStore: ObservableObject {
 
     // MARK: - Attendance Management (Enhanced)
 
-    func checkIn(userName: String, userNo: String = "") {
+    func checkIn(userName: String, userNo: String = "", at time: Date = Date()) {
         let today = AttendanceEntry.todayKey()
-        let now = Date()
+        let now = time
 
         dbQueue.async { [weak self] in
             guard let self = self else { return }

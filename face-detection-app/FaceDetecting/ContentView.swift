@@ -8,6 +8,7 @@ import Darwin
 struct ContentView: View {
     @StateObject var viewModel = FaceRecognitionViewModel()
     @StateObject var apiService = APIService.shared
+    @Environment(\.scenePhase) private var scenePhase
 
     @State private var showingSettings = false
     @State private var showingFaceRegistration = false
@@ -36,6 +37,7 @@ struct ContentView: View {
 
     @State private var isScanning = false
     @State private var currentTime = Date()
+    @State private var lastAttendanceRefreshDay = Calendar.current.startOfDay(for: Date())
 
     @State private var showingConsent = false
     @State private var pendingConsentEmployeeName: String = ""
@@ -177,11 +179,29 @@ struct ContentView: View {
             }
         }
         .ignoresSafeArea()
-        .onReceive(timer) { _ in currentTime = Date() }
+        .onReceive(timer) { _ in
+            currentTime = Date()
+            let today = Calendar.current.startOfDay(for: currentTime)
+            if today != lastAttendanceRefreshDay {
+                lastAttendanceRefreshDay = today
+                viewModel.store.refreshToday()
+                Task { await apiService.loadEmployees() }
+            }
+        }
         .onReceive(ipRefreshTimer) { _ in refreshDeviceIPAddress() }
         .onAppear {
             withAnimation(.easeInOut(duration: 0.8).repeatForever()) { isScanning = true }
             refreshDeviceIPAddress()
+        }
+        .onChange(of: scenePhase) { _, phase in
+            // The capture session is first started while the ViewModel is constructed,
+            // which on cold launch can happen before the scene is actually active — on some
+            // devices AVCaptureSession.startRunning() then silently stalls until something
+            // (e.g. the first touch) pumps the run loop. Retrying once the scene is
+            // confirmedly .active makes recognition start on its own, with no tap needed.
+            if phase == .active {
+                viewModel.cameraManager.start()
+            }
         }
         .sheet(isPresented: $showingSettings) {
             SettingsView(viewModel: viewModel)

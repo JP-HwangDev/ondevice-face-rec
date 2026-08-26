@@ -476,6 +476,13 @@ class FaceVectorStore: ObservableObject {
         loadLogs()
     }
 
+    /// Re-reads today's attendance from the DB. Call this when the calendar day rolls over
+    /// while the app stays running, since `todayAttendance` is otherwise only refreshed on
+    /// check-in/check-out and would keep showing yesterday's entries.
+    func refreshToday() {
+        loadTodayAttendance()
+    }
+
     func clearTodayAttendance() {
         let today = AttendanceEntry.todayKey()
         let sql = "DELETE FROM DailyAttendance WHERE date = ?;"

@@ -3,6 +3,18 @@ import Combine
 import SwiftUI
 import SQLite3
 
+enum FaceUserType: String, Codable {
+    case employee = "EMPLOYEE"
+    case visitor = "VISITOR"
+
+    var label: String {
+        switch self {
+        case .employee: return "社員"
+        case .visitor: return "訪問者"
+        }
+    }
+}
+
 struct FaceUser: Identifiable, Codable {
     let id: String
     let name: String
@@ -10,15 +22,22 @@ struct FaceUser: Identifiable, Codable {
     var faceSignatures: [[Float]]
     var registeredAt: Date
     var lastSeenAt: Date?
+    var userType: FaceUserType
+    var visitPurpose: String?
 
-    init(id: String, name: String, department: String, faceSignatures: [[Float]], registeredAt: Date = Date(), lastSeenAt: Date? = nil) {
+    init(id: String, name: String, department: String, faceSignatures: [[Float]], registeredAt: Date = Date(), lastSeenAt: Date? = nil, userType: FaceUserType = .employee, visitPurpose: String? = nil) {
         self.id = id
         self.name = name
         self.department = department
         self.faceSignatures = faceSignatures
         self.registeredAt = registeredAt
         self.lastSeenAt = lastSeenAt
+        self.userType = userType
+        self.visitPurpose = visitPurpose
     }
+
+    var isVisitor: Bool { userType == .visitor }
+    var displaySubtitle: String { isVisitor ? department : (department.isEmpty ? "本社" : department) }
 
     var initials: String {
         let components = name.components(separatedBy: " ")
@@ -43,11 +62,19 @@ class FaceVectorStore: ObservableObject {
     @Published var attendanceLogs: [AttendanceRecord] = []
     @Published var todayAttendance: [String: AttendanceEntry] = [:] // userName -> AttendanceEntry
     @Published var weeklyStats: [DayStat] = []
+    @Published var consentLogs: [ConsentRecord] = []
 
     struct DayStat: Identifiable {
         let id = UUID()
         let day: String
         let count: Int
+    }
+
+    struct ConsentRecord: Identifiable, Codable {
+        let id: String
+        let userName: String
+        let consentVersion: String
+        let timestamp: Date
     }
 
     private var db: OpaquePointer?
@@ -66,6 +93,7 @@ class FaceVectorStore: ObservableObject {
         loadUsers()
         loadLogs()
         loadTodayAttendance()
+        loadConsentLogs()
     }
 
     deinit {
@@ -128,6 +156,15 @@ class FaceVectorStore: ObservableObject {
         );
         """
 
+        let createConsentTable = """
+        CREATE TABLE IF NOT EXISTS ConsentLogs (
+            id TEXT PRIMARY KEY,
+            user_name TEXT,
+            consent_version TEXT,
+            timestamp REAL
+        );
+        """
+
         // Create indexes for faster queries
         let createIndexes = """
         CREATE INDEX IF NOT EXISTS idx_logs_timestamp ON AttendanceLogs(timestamp DESC);
@@ -140,6 +177,7 @@ class FaceVectorStore: ObservableObject {
         execute(sql: createVectorsTable)
         execute(sql: createLogsTable)
         execute(sql: createDailyAttendanceTable)
+        execute(sql: createConsentTable)
 
         for statement in createIndexes.components(separatedBy: ";") where !statement.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             execute(sql: statement + ";")
@@ -161,6 +199,12 @@ class FaceVectorStore: ObservableObject {
         let addLastSeenAt = "ALTER TABLE Users ADD COLUMN last_seen_at REAL;"
         execute(sql: addLastSeenAt)
 
+        let addUserType = "ALTER TABLE Users ADD COLUMN user_type TEXT DEFAULT 'EMPLOYEE';"
+        execute(sql: addUserType)
+
+        let addVisitPurpose = "ALTER TABLE Users ADD COLUMN visit_purpose TEXT;"
+        execute(sql: addVisitPurpose)
+
         // AttendanceLogs table migrations
         let addType = "ALTER TABLE AttendanceLogs ADD COLUMN type TEXT DEFAULT 'checkIn';"
         execute(sql: addType)
@@ -179,10 +223,11 @@ class FaceVectorStore: ObservableObject {
         var userId = user.id
         var existingUser = false
 
-        let queryUser = "SELECT id FROM Users WHERE name = ? LIMIT 1;"
+        let queryUser = "SELECT id FROM Users WHERE name = ? AND user_type = ? LIMIT 1;"
         var stmt: OpaquePointer?
         if sqlite3_prepare_v2(db, queryUser, -1, &stmt, nil) == SQLITE_OK {
             sqlite3_bind_text(stmt, 1, (user.name as NSString).utf8String, -1, nil)
+            sqlite3_bind_text(stmt, 2, (user.userType.rawValue as NSString).utf8String, -1, nil)
             if sqlite3_step(stmt) == SQLITE_ROW {
                 if let idStr = sqlite3_column_text(stmt, 0) {
                     userId = String(cString: idStr)
@@ -193,12 +238,18 @@ class FaceVectorStore: ObservableObject {
         sqlite3_finalize(stmt)
 
         if !existingUser {
-            let insertUser = "INSERT INTO Users (id, name, department, registered_at) VALUES (?, ?, ?, ?);"
+            let insertUser = "INSERT INTO Users (id, name, department, registered_at, user_type, visit_purpose) VALUES (?, ?, ?, ?, ?, ?);"
             if sqlite3_prepare_v2(db, insertUser, -1, &stmt, nil) == SQLITE_OK {
                 sqlite3_bind_text(stmt, 1, (userId as NSString).utf8String, -1, nil)
                 sqlite3_bind_text(stmt, 2, (user.name as NSString).utf8String, -1, nil)
                 sqlite3_bind_text(stmt, 3, (user.department as NSString).utf8String, -1, nil)
                 sqlite3_bind_double(stmt, 4, user.registeredAt.timeIntervalSince1970)
+                sqlite3_bind_text(stmt, 5, (user.userType.rawValue as NSString).utf8String, -1, nil)
+                if let visitPurpose = user.visitPurpose {
+                    sqlite3_bind_text(stmt, 6, (visitPurpose as NSString).utf8String, -1, nil)
+                } else {
+                    sqlite3_bind_null(stmt, 6)
+                }
                 sqlite3_step(stmt)
             } else {
                 print("Insert User Error: \(String(cString: sqlite3_errmsg(db)))")
@@ -219,6 +270,34 @@ class FaceVectorStore: ObservableObject {
             }
         } else {
             print("Insert Vector Error: \(String(cString: sqlite3_errmsg(db)))")
+        }
+        sqlite3_finalize(stmt)
+
+        limitSignatures(for: userId, maxCount: 200)
+        loadUsers()
+    }
+
+    /// Appends a single confidently-matched embedding to an existing user's signatures,
+    /// e.g. from a successful checkIn/checkOut. Cheaper than saveUser() since it skips the
+    /// name/user_type lookup and re-inserts nothing but the one vector.
+    func appendSignature(userId: String, vector: [Float]) {
+        dbQueue.async { [weak self] in
+            self?.appendSignatureSync(userId: userId, vector: vector)
+        }
+    }
+
+    private func appendSignatureSync(userId: String, vector: [Float]) {
+        let insertVector = "INSERT INTO FaceSignatures (user_id, vector) VALUES (?, ?);"
+        var stmt: OpaquePointer?
+        if sqlite3_prepare_v2(db, insertVector, -1, &stmt, nil) == SQLITE_OK {
+            let data = toData(vector: vector)
+            sqlite3_bind_text(stmt, 1, (userId as NSString).utf8String, -1, nil)
+            _ = data.withUnsafeBytes { rawBuffer in
+                sqlite3_bind_blob(stmt, 2, rawBuffer.baseAddress, Int32(rawBuffer.count), nil)
+            }
+            sqlite3_step(stmt)
+        } else {
+            print("Append Signature Error: \(String(cString: sqlite3_errmsg(db)))")
         }
         sqlite3_finalize(stmt)
 
@@ -282,9 +361,9 @@ class FaceVectorStore: ObservableObject {
 
     // MARK: - Attendance Management (Enhanced)
 
-    func checkIn(userName: String, userNo: String = "") {
+    func checkIn(userName: String, userNo: String = "", at time: Date = Date()) {
         let today = AttendanceEntry.todayKey()
-        let now = Date()
+        let now = time
 
         dbQueue.async { [weak self] in
             guard let self = self else { return }
@@ -363,6 +442,10 @@ class FaceVectorStore: ObservableObject {
         return .notCheckedIn
     }
 
+    func user(named name: String) -> FaceUser? {
+        users.first { $0.name == name }
+    }
+
     func addLog(name: String, type: String = "checkIn") {
         dbQueue.async { [weak self] in
             self?.addLogSync(name: name, type: type)
@@ -393,6 +476,13 @@ class FaceVectorStore: ObservableObject {
         loadLogs()
     }
 
+    /// Re-reads today's attendance from the DB. Call this when the calendar day rolls over
+    /// while the app stays running, since `todayAttendance` is otherwise only refreshed on
+    /// check-in/check-out and would keep showing yesterday's entries.
+    func refreshToday() {
+        loadTodayAttendance()
+    }
+
     func clearTodayAttendance() {
         let today = AttendanceEntry.todayKey()
         let sql = "DELETE FROM DailyAttendance WHERE date = ?;"
@@ -420,7 +510,7 @@ class FaceVectorStore: ObservableObject {
     private func loadUsers() {
         var newUsers: [FaceUser] = []
 
-        let userSql = "SELECT id, name, department, registered_at, last_seen_at FROM Users;"
+        let userSql = "SELECT id, name, department, registered_at, last_seen_at, user_type, visit_purpose FROM Users;"
         var stmt: OpaquePointer?
         if sqlite3_prepare_v2(db, userSql, -1, &stmt, nil) == SQLITE_OK {
             while sqlite3_step(stmt) == SQLITE_ROW {
@@ -435,9 +525,18 @@ class FaceVectorStore: ObservableObject {
                 if sqlite3_column_type(stmt, 4) != SQLITE_NULL {
                     lastSeenAt = Date(timeIntervalSince1970: sqlite3_column_double(stmt, 4))
                 }
+                var userType: FaceUserType = .employee
+                if let typePtr = sqlite3_column_text(stmt, 5),
+                   let parsed = FaceUserType(rawValue: String(cString: typePtr)) {
+                    userType = parsed
+                }
+                var visitPurpose: String? = nil
+                if let purposePtr = sqlite3_column_text(stmt, 6) {
+                    visitPurpose = String(cString: purposePtr)
+                }
 
                 let signatures = loadSignatures(for: id)
-                newUsers.append(FaceUser(id: id, name: name, department: dept, faceSignatures: signatures, registeredAt: registeredAt, lastSeenAt: lastSeenAt))
+                newUsers.append(FaceUser(id: id, name: name, department: dept, faceSignatures: signatures, registeredAt: registeredAt, lastSeenAt: lastSeenAt, userType: userType, visitPurpose: visitPurpose))
             }
         } else {
             let errmsg = String(cString: sqlite3_errmsg(db))
@@ -541,6 +640,43 @@ class FaceVectorStore: ObservableObject {
         DispatchQueue.main.async {
             self.todayAttendance = entries
         }
+    }
+
+    // MARK: - Consent Logs
+    func saveConsent(userName: String, consentVersion: String) {
+        let id = UUID().uuidString
+        let ts = Date().timeIntervalSince1970
+        let insertSql = "INSERT INTO ConsentLogs (id, user_name, consent_version, timestamp) VALUES (?, ?, ?, ?);"
+        dbQueue.async { [weak self] in
+            guard let self = self else { return }
+            var stmt: OpaquePointer?
+            if sqlite3_prepare_v2(self.db, insertSql, -1, &stmt, nil) == SQLITE_OK {
+                sqlite3_bind_text(stmt, 1, (id as NSString).utf8String, -1, nil)
+                sqlite3_bind_text(stmt, 2, (userName as NSString).utf8String, -1, nil)
+                sqlite3_bind_text(stmt, 3, (consentVersion as NSString).utf8String, -1, nil)
+                sqlite3_bind_double(stmt, 4, ts)
+                sqlite3_step(stmt)
+            }
+            sqlite3_finalize(stmt)
+            DispatchQueue.main.async { self.loadConsentLogs() }
+        }
+    }
+
+    func loadConsentLogs() {
+        var logs: [ConsentRecord] = []
+        let sql = "SELECT id, user_name, consent_version, timestamp FROM ConsentLogs ORDER BY timestamp DESC;"
+        var stmt: OpaquePointer?
+        if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                let idStr = String(cString: sqlite3_column_text(stmt, 0))
+                let name = String(cString: sqlite3_column_text(stmt, 1))
+                let version = String(cString: sqlite3_column_text(stmt, 2))
+                let ts = sqlite3_column_double(stmt, 3)
+                logs.append(ConsentRecord(id: idStr, userName: name, consentVersion: version, timestamp: Date(timeIntervalSince1970: ts)))
+            }
+        }
+        sqlite3_finalize(stmt)
+        DispatchQueue.main.async { self.consentLogs = logs }
     }
 
     // MARK: - Backup & Restore

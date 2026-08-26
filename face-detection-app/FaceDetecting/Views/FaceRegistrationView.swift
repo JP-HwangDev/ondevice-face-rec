@@ -7,11 +7,18 @@ struct FaceRegistrationView: View {
     @Environment(\.dismiss) var dismiss
 
     var preselectedEmployee: Employee? = nil
+    var mode: RegistrationMode = .employee
 
     @State private var selectedEmployee: Employee?
     @State private var phase: Phase = .picking
+    @State private var visitorCompany = ""
+    @State private var visitorName = ""
+    @State private var visitorPurpose = ""
+    @State private var isSubmittingVisitor = false
+    @State private var visitorError: String?
 
     enum Phase { case picking, capturing, done }
+    enum RegistrationMode { case employee, visitor }
 
     // MARK: - Body
 
@@ -20,7 +27,11 @@ struct FaceRegistrationView: View {
             Group {
                 switch phase {
                 case .picking:
-                    employeePickerView
+                    if mode == .visitor {
+                        visitorFormView
+                    } else {
+                        employeePickerView
+                    }
                 case .capturing:
                     cameraView
                 case .done:
@@ -57,6 +68,15 @@ struct FaceRegistrationView: View {
     private func startCapture() {
         viewModel.startRegistration()
         withAnimation { phase = .capturing }
+    }
+
+    private func startVisitorCapture() {
+        visitorError = nil
+        guard !visitorName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            visitorError = "名前を入力してください"
+            return
+        }
+        startCapture()
     }
 
     // MARK: - Phase: Employee Picker
@@ -106,7 +126,46 @@ struct FaceRegistrationView: View {
             }
         }
         .navigationTitle("社員を選択")
-        .task { await apiService.loadEmployees() }
+        .task {
+            // Members list (ContentView) already loads this at launch — re-fetching here
+            // on every registration open shares APIService's errorMessage/isLoading with
+            // that list screen, so a transient failure of this redundant call was leaking
+            // into the Members tab as a full connection-error screen after registration.
+            if apiService.employees.isEmpty {
+                await apiService.loadEmployees()
+            }
+        }
+    }
+
+    private var visitorFormView: some View {
+        Form {
+            Section("訪問者情報") {
+                TextField("会社名", text: $visitorCompany)
+                    .textContentType(.organizationName)
+                TextField("名前", text: $visitorName)
+                    .textContentType(.name)
+                TextField("訪問目的", text: $visitorPurpose)
+            }
+
+            if let visitorError {
+                Section {
+                    Text(visitorError)
+                        .font(.caption)
+                        .foregroundColor(.red)
+                }
+            }
+
+            Section {
+                Button {
+                    startVisitorCapture()
+                } label: {
+                    Label("顔撮影へ進む", systemImage: "camera.fill")
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
+                }
+            }
+        }
+        .navigationTitle("訪問者登録")
     }
 
     // MARK: - Phase: Camera Capture
@@ -138,13 +197,57 @@ struct FaceRegistrationView: View {
 
                 // Overlay
                 captureOverlay(geo: geo)
+
+                // Mask warning — takes priority over the normal capture guidance
+                if viewModel.isMaskDetected {
+                    maskWarningBanner(geo: geo)
+                        .zIndex(10)
+                }
             }
         }
         .ignoresSafeArea()
-        .navigationTitle(selectedEmployee?.userName ?? "顔登録")
+        .navigationTitle(mode == .visitor ? (visitorName.isEmpty ? "訪問者登録" : visitorName) : (selectedEmployee?.userName ?? "顔登録"))
         .onChange(of: viewModel.registrationProgress) { _, progress in
             if progress >= 1.0 {
                 withAnimation { phase = .done }
+                if mode == .visitor {
+                    finalizeVisitor()
+                } else {
+                    viewModel.finalizeRegistration(name: selectedEmployee?.userName ?? "")
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                        dismiss()
+                    }
+                }
+            }
+        }
+    }
+
+    private func finalizeVisitor() {
+        let name = visitorName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let company = visitorCompany.trimmingCharacters(in: .whitespacesAndNewlines)
+        let purpose = visitorPurpose.trimmingCharacters(in: .whitespacesAndNewlines)
+        let photo = viewModel.currentFrameJPEGBase64()
+
+        isSubmittingVisitor = true
+        Task {
+            do {
+                try await apiService.registerVisitor(
+                    company: company,
+                    name: name,
+                    purpose: purpose,
+                    photoBase64: photo
+                )
+                await apiService.loadVisitors()
+            } catch {
+                print("[VisitorRegistration] API error: \(error)")
+            }
+
+            await MainActor.run {
+                viewModel.finalizeVisitorRegistration(name: name, company: company, purpose: purpose)
+                isSubmittingVisitor = false
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                    dismiss()
+                }
             }
         }
     }
@@ -153,11 +256,15 @@ struct FaceRegistrationView: View {
         let guideSize: CGFloat = min(geo.size.width * 0.72, 280)
         let progress = viewModel.registrationProgress
         let hasFace = !viewModel.detectedFaces.isEmpty
+        let sampleCount = Int(progress * 12)
 
         return VStack(spacing: 0) {
-            // Name + status
             VStack(spacing: 6) {
-                if let emp = selectedEmployee {
+                if mode == .visitor {
+                    Text(visitorName)
+                        .font(.title3.bold())
+                        .foregroundColor(.white)
+                } else if let emp = selectedEmployee {
                     Text(emp.userName)
                         .font(.title3.bold())
                         .foregroundColor(.white)
@@ -174,17 +281,23 @@ struct FaceRegistrationView: View {
 
             // Face guide circle
             ZStack {
-                // Outer ring
+                // Outer decorative ring
                 Circle()
-                    .stroke(Color.white.opacity(0.15), lineWidth: 2)
-                    .frame(width: guideSize + 20, height: guideSize + 20)
+                    .stroke(Color.white.opacity(0.1), lineWidth: 1.5)
+                    .frame(width: guideSize + 24, height: guideSize + 24)
+
+                // Progress track (background)
+                Circle()
+                    .stroke(Color.white.opacity(0.12), lineWidth: 9)
+                    .frame(width: guideSize, height: guideSize)
 
                 // Detection ring
                 Circle()
-                    .stroke(hasFace ? Color.green : Color.white.opacity(0.4),
-                            lineWidth: hasFace ? 3 : 1.5)
+                    .stroke(viewModel.isMaskDetected ? Color.red.opacity(0.6) : (hasFace ? Color.green.opacity(0.5) : Color.white.opacity(0.3)),
+                            lineWidth: hasFace ? 2.5 : 1.5)
                     .frame(width: guideSize, height: guideSize)
                     .animation(.easeInOut(duration: 0.3), value: hasFace)
+                    .animation(.easeInOut(duration: 0.3), value: viewModel.isMaskDetected)
 
                 // Progress arc
                 Circle()
@@ -194,29 +307,54 @@ struct FaceRegistrationView: View {
                             colors: [.green, .cyan],
                             startPoint: .topLeading,
                             endPoint: .bottomTrailing),
-                        style: StrokeStyle(lineWidth: 5, lineCap: .round))
+                        style: StrokeStyle(lineWidth: 9, lineCap: .round))
                     .frame(width: guideSize, height: guideSize)
                     .rotationEffect(.degrees(-90))
+                    .shadow(color: Color.green.opacity(progress > 0.05 ? 0.6 : 0), radius: 8)
                     .animation(.easeOut(duration: 0.2), value: progress)
 
-                // Face icon
-                Image(systemName: hasFace ? "person.fill" : "person.and.background.dotted")
-                    .font(.system(size: guideSize * 0.22))
-                    .foregroundColor(hasFace ? .green.opacity(0.8) : .white.opacity(0.25))
-                    .animation(.easeInOut, value: hasFace)
+                // Center: percentage + count, or icon when not started
+                VStack(spacing: 3) {
+                    if progress > 0 {
+                        Text("\(Int(progress * 100))%")
+                            .font(.system(size: guideSize * 0.17, weight: .bold, design: .rounded))
+                            .foregroundColor(.white)
+                            .shadow(color: .black.opacity(0.5), radius: 2)
+                        Text("\(sampleCount) / 12")
+                            .font(.system(size: guideSize * 0.075, weight: .medium))
+                            .foregroundColor(.white.opacity(0.55))
+                    } else {
+                        Image(systemName: hasFace ? "person.fill" : "person.and.background.dotted")
+                            .font(.system(size: guideSize * 0.22))
+                            .foregroundColor(hasFace ? .green.opacity(0.8) : .white.opacity(0.2))
+                            .animation(.easeInOut, value: hasFace)
+                    }
+                }
             }
 
             Spacer()
 
-            // Progress bar + hint
-            VStack(spacing: 14) {
-                // Dots
-                HStack(spacing: 10) {
+            // Bottom progress panel
+            VStack(spacing: 12) {
+                // Face detection status
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(viewModel.isMaskDetected ? Color.red : (hasFace ? Color.green : Color.orange))
+                        .frame(width: 7, height: 7)
+                    Text(viewModel.isMaskDetected ? "顔を正面に向けてください" : (hasFace ? "顔を検出中..." : "カメラに顔を向けてください"))
+                        .font(.caption)
+                        .foregroundColor(viewModel.isMaskDetected ? .red : (hasFace ? .green : .white.opacity(0.7)))
+                        .animation(.easeInOut, value: hasFace)
+                        .animation(.easeInOut, value: viewModel.isMaskDetected)
+                }
+
+                // Segment dots
+                HStack(spacing: 7) {
                     ForEach(0..<15, id: \.self) { i in
-                        Circle()
-                            .fill(Float(i) < progress * 15 ? Color.green : Color.white.opacity(0.2))
-                            .frame(width: 10, height: 10)
-                            .animation(.spring(), value: progress)
+                        RoundedRectangle(cornerRadius: 3)
+                            .fill(Float(i) < progress * 15 ? Color.green : Color.white.opacity(0.18))
+                            .frame(width: 14, height: 7)
+                            .animation(.spring(response: 0.25, dampingFraction: 0.7), value: progress)
                     }
                 }
 
@@ -236,8 +374,40 @@ struct FaceRegistrationView: View {
                         ok: viewModel.isFaceCentered)
                 }
             }
-            .padding(.bottom, geo.safeAreaInsets.bottom + 24)
+            .padding(.vertical, 18)
+            .padding(.horizontal, 24)
+            .frame(maxWidth: .infinity)
+            .background(Color.black.opacity(0.6))
+            .cornerRadius(18)
+            .overlay(
+                RoundedRectangle(cornerRadius: 18)
+                    .stroke(Color.white.opacity(0.08), lineWidth: 1)
+            )
+            .padding(.horizontal, 16)
+            .padding(.bottom, geo.safeAreaInsets.bottom + 16)
         }
+    }
+
+    private func maskWarningBanner(geo: GeometryProxy) -> some View {
+        VStack {
+            HStack(spacing: 10) {
+                Image(systemName: "facemask.fill")
+                    .foregroundStyle(LinearGradient(colors: [.orange, .red], startPoint: .top, endPoint: .bottom))
+                Text("顔を正面に向けてください")
+                    .font(.system(size: 14, weight: .bold, design: .rounded))
+                    .foregroundColor(.white)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .background(.ultraThinMaterial)
+            .clipShape(Capsule())
+            .overlay(Capsule().stroke(Color.orange.opacity(0.5), lineWidth: 1))
+            .padding(.top, geo.safeAreaInsets.top + 8)
+
+            Spacer()
+        }
+        .transition(.move(edge: .top).combined(with: .opacity))
+        .animation(.spring(response: 0.4, dampingFraction: 0.8), value: viewModel.isMaskDetected)
     }
 
     private func qualityBadge(icon: String, label: String, ok: Bool) -> some View {
@@ -277,18 +447,22 @@ struct FaceRegistrationView: View {
             VStack(spacing: 10) {
                 Text("登録完了")
                     .font(.title.bold())
-                if let name = selectedEmployee?.userName {
+                let displayName = mode == .visitor ? visitorName : selectedEmployee?.userName
+                if let name = displayName, !name.isEmpty {
                     Text("\(name)さんの顔データを登録しました")
                         .font(.subheadline)
                         .foregroundColor(.secondary)
                         .multilineTextAlignment(.center)
+                }
+                if isSubmittingVisitor {
+                    ProgressView("サーバーへ登録中...")
+                        .font(.caption)
                 }
             }
 
             Spacer()
 
             Button {
-                viewModel.finalizeRegistration(name: selectedEmployee?.userName ?? "")
                 dismiss()
             } label: {
                 Text("完了")
@@ -305,4 +479,3 @@ struct FaceRegistrationView: View {
         .navigationTitle("")
     }
 }
-

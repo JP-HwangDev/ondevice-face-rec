@@ -21,9 +21,11 @@ class CameraManager: NSObject, ObservableObject {
     let session = AVCaptureSession()
     private let videoOutput = AVCaptureVideoDataOutput()
     private let queue = DispatchQueue(label: "camera.queue", qos: .userInteractive)
+    private var rotationCoordinator: AVCaptureDevice.RotationCoordinator?
+    private var rotationObservation: NSKeyValueObservation?
 
     private var frameSkipCounter = 0
-    private let frameSkipInterval = 3 // Every 3rd frame — reduces CPU without visible lag
+    private let frameSkipInterval = 2 // Every 2nd frame — faster recognition, still saves some CPU
 
     override init() {
         super.init()
@@ -48,29 +50,31 @@ class CameraManager: NSObject, ObservableObject {
             }
         default: self.isAuthorized = false
         }
-        
-        // Setup orientation tracking
-        NotificationCenter.default.addObserver(self, selector: #selector(updateOrientation), name: UIDevice.orientationDidChangeNotification, object: nil)
-        updateOrientation()
     }
 
-    @objc private func updateOrientation() {
-        let newAngle: CGFloat
-        switch UIDevice.current.orientation {
-        case .portrait: newAngle = 90
-        case .portraitUpsideDown: newAngle = 270
-        case .landscapeLeft: newAngle = 180  // swap for front camera
-        case .landscapeRight: newAngle = 0   // swap for front camera
-        default: return
-        }
-        if rotationAngle != newAngle {
-            rotationAngle = newAngle
-            videoOutput.connection(with: .video)?.videoRotationAngle = newAngle
+    // Front-camera sensor mounting differs between iPhone and iPad, so a fixed
+    // UIDevice-orientation → angle table (tuned for iPhone) ends up upside-down
+    // on iPad. RotationCoordinator asks the system for the correct angle per device.
+    private func setupRotationCoordinator(for device: AVCaptureDevice) {
+        let coordinator = AVCaptureDevice.RotationCoordinator(device: device, previewLayer: nil)
+        rotationCoordinator = coordinator
+
+        let angle = coordinator.videoRotationAngleForHorizonLevelCapture
+        rotationAngle = angle
+        videoOutput.connection(with: .video)?.videoRotationAngle = angle
+
+        rotationObservation = coordinator.observe(\.videoRotationAngleForHorizonLevelCapture, options: [.new]) { [weak self] _, change in
+            guard let self, let newAngle = change.newValue else { return }
+            DispatchQueue.main.async {
+                self.rotationAngle = newAngle
+                self.videoOutput.connection(with: .video)?.videoRotationAngle = newAngle
+            }
         }
     }
 
     private func setupSession() {
         session.beginConfiguration()
+        defer { session.commitConfiguration() }
         session.sessionPreset = .hd1280x720
         session.automaticallyConfiguresApplicationAudioSession = false
 
@@ -95,13 +99,11 @@ class CameraManager: NSObject, ObservableObject {
         videoOutput.setSampleBufferDelegate(self, queue: queue)
         if session.canAddOutput(videoOutput) { session.addOutput(videoOutput) }
         if let connection = videoOutput.connection(with: .video) {
-            connection.videoRotationAngle = 90
             connection.isVideoMirrored = true
         }
-        
+        setupRotationCoordinator(for: device)
+
         NotificationCenter.default.addObserver(self, selector: #selector(sessionRuntimeError), name: AVCaptureSession.runtimeErrorNotification, object: session)
-        
-        session.commitConfiguration()
     }
     
     @objc func sessionRuntimeError(notification: NSNotification) {
@@ -172,7 +174,7 @@ class FaceRecognitionViewModel: ObservableObject {
     @Published var bufferSize: CGSize = .zero
 
     private var tempSignatures: [[Float]] = []
-    private let requiredSamples = 15
+    private let requiredSamples = 12
     private var lastSampleTime: Date = Date()
     private var lastSampleYaw: Float? = nil
     private var lastSamplePitch: Float? = nil
@@ -182,6 +184,14 @@ class FaceRecognitionViewModel: ObservableObject {
     @Published var isFaceCentered: Bool = false
     @Published var faceCaptureQuality: Float = 0.0
     @Published var rotationAngle: CGFloat = 90
+
+    // Mask detection (heuristic — no ML model, no external assets)
+    @Published var isMaskDetected: Bool = false
+    @Published var maskColorDistanceThreshold: Float = 30
+    private var maskScore: Int = 0
+    private let maskScoreMax = 6
+    private let maskOnScore = 3   // net evidence needed to flip ON
+    private let maskOffScore = 2  // score must fall back to this to flip OFF (hysteresis)
 
     enum LightingStatus: String {
         case dark = "暗すぎます"
@@ -194,20 +204,30 @@ class FaceRecognitionViewModel: ObservableObject {
 
     // Recognition stabilization
     private var recognitionHistory: [String: Int] = [:]
-    private let recognitionThreshold = 3 // Need 3 consecutive recognitions
+    private let recognitionThreshold = 2 // Need 2 consecutive recognitions
+
+    // The embedding/user behind the most recent high-confidence recognition, held so it
+    // can be folded into the user's stored signatures once checkIn/checkOut actually commits.
+    private var pendingAttendanceUserId: String?
+    private var pendingAttendanceEmbedding: [Float]?
 
     // Precomputed centroid embeddings for faster & more accurate matching
-    private var userCentroidCache: [(name: String, centroid: [Float])] = []
-    private var lastRecognizedName: String = ""
+    private var userCentroidCache: [(user: FaceUser, centroid: [Float])] = []
+    private var lastRecognizedKey: String = ""
 
     struct Candidate: Identifiable, Equatable {
-        var id: String { name }
+        var id: String { userId }
+        let userId: String
         let name: String
+        let department: String
+        let userType: FaceUserType
+        let visitPurpose: String?
         let similarity: Float
         let status: UserAttendanceStatus
+        var isVisitor: Bool { userType == .visitor }
 
         static func == (lhs: Candidate, rhs: Candidate) -> Bool {
-            lhs.name == rhs.name && lhs.similarity == rhs.similarity
+            lhs.userId == rhs.userId && lhs.similarity == rhs.similarity
         }
     }
 
@@ -231,7 +251,7 @@ class FaceRecognitionViewModel: ObservableObject {
     private let processingQueue = DispatchQueue(label: "face.processing.queue", qos: .userInteractive, attributes: .concurrent)
 
     // Precomputed user embeddings for faster matching
-    private var userEmbeddingsCache: [(name: String, embeddings: [[Float]])] = []
+    private var userEmbeddingsCache: [(user: FaceUser, embeddings: [[Float]])] = []
 
     init() {
         // Initialize CIContext with Metal for GPU acceleration
@@ -244,6 +264,9 @@ class FaceRecognitionViewModel: ObservableObject {
         setupModel()
         cameraManager.start()
         authStatus = "顔を認識してください"
+
+        // Load saved thresholds
+        loadThresholdSettings()
 
         // Observe user changes to update cache
         observeUserChanges()
@@ -261,6 +284,30 @@ class FaceRecognitionViewModel: ObservableObject {
     
     private var cancellables = Set<AnyCancellable>()
 
+    private func loadThresholdSettings() {
+        let ud = UserDefaults.standard
+        if ud.object(forKey: "rsp.matchThreshold") != nil { matchThreshold = ud.float(forKey: "rsp.matchThreshold") }
+        if ud.object(forKey: "rsp.dropThreshold") != nil  { dropThreshold  = ud.float(forKey: "rsp.dropThreshold") }
+        if ud.object(forKey: "rsp.smoothingAlpha") != nil { smoothingAlpha = ud.float(forKey: "rsp.smoothingAlpha") }
+        if ud.object(forKey: "rsp.marginRequired") != nil { marginRequired = ud.float(forKey: "rsp.marginRequired") }
+        if ud.object(forKey: "rsp.maskColorDistanceThreshold") != nil { maskColorDistanceThreshold = ud.float(forKey: "rsp.maskColorDistanceThreshold") }
+
+        let ud2 = UserDefaults.standard
+        $matchThreshold.dropFirst().sink { ud2.set($0, forKey: "rsp.matchThreshold") }.store(in: &cancellables)
+        $dropThreshold.dropFirst().sink  { ud2.set($0, forKey: "rsp.dropThreshold")  }.store(in: &cancellables)
+        $smoothingAlpha.dropFirst().sink { ud2.set($0, forKey: "rsp.smoothingAlpha") }.store(in: &cancellables)
+        $marginRequired.dropFirst().sink { ud2.set($0, forKey: "rsp.marginRequired") }.store(in: &cancellables)
+        $maskColorDistanceThreshold.dropFirst().sink { ud2.set($0, forKey: "rsp.maskColorDistanceThreshold") }.store(in: &cancellables)
+    }
+
+    func resetThresholds() {
+        matchThreshold = 0.70
+        dropThreshold  = 0.60
+        smoothingAlpha = 0.25
+        marginRequired = 0.04
+        maskColorDistanceThreshold = 30
+    }
+
     private func observeUserChanges() {
         // Rebuild embeddings cache when users change
         Task {
@@ -273,12 +320,12 @@ class FaceRecognitionViewModel: ObservableObject {
     }
 
     private func rebuildEmbeddingsCache() async {
-        userEmbeddingsCache = store.users.map { ($0.name, $0.faceSignatures) }
+        userEmbeddingsCache = store.users.map { ($0, $0.faceSignatures) }
         // Also build centroid cache
         userCentroidCache = store.users.compactMap { user in
             guard !user.faceSignatures.isEmpty else { return nil }
             let centroid = computeCentroid(user.faceSignatures)
-            return (user.name, centroid)
+            return (user, centroid)
         }
     }
 
@@ -311,39 +358,27 @@ class FaceRecognitionViewModel: ObservableObject {
         guard !isProcessingFrame else { return }
         isProcessingFrame = true
 
-        let request = VNDetectFaceLandmarksRequest { [weak self] req, error in
-            Task { @MainActor [weak self] in
-                guard let self = self else { return }
-                
-                guard let results = req.results as? [VNFaceObservation] else {
-                    self.isProcessingFrame = false
-                    return
-                }
+        // Rectangles: Vision's mask/occlusion-robust detector (revision 3). This is the
+        // authoritative face list, so bounding boxes still appear when a face mask is worn.
+        let rectanglesRequest = VNDetectFaceRectanglesRequest()
+        rectanglesRequest.revision = VNDetectFaceRectanglesRequestRevision3
 
-                self.updateFaceResults(with: results)
-                self.isProcessingFrame = false
-
-                if self.recognitionTask == nil {
-                    self.recognitionTask = Task {
-                        await self.performRecognition(on: sendableBuffer.buffer, observations: results)
-                        self.recognitionTask = nil
-                    }
-                }
-            }
-        }
-        request.revision = VNDetectFaceLandmarksRequestRevision3
+        // Landmarks: best-effort only. Under occlusion this can return fewer faces than
+        // the rectangles request (sometimes none at all), so it must never gate detection.
+        let landmarksRequest = VNDetectFaceLandmarksRequest()
+        landmarksRequest.revision = VNDetectFaceLandmarksRequestRevision3
 
         let faceCaptureRequest = VNDetectFaceCaptureQualityRequest { [weak self] req, _ in
             Task { @MainActor [weak self] in
                 guard let self = self, let result = req.results?.first as? VNFaceObservation else { return }
                 self.faceCaptureQuality = result.faceCaptureQuality ?? 0.0
-                
+
                 if self.faceCaptureQuality < 0.2 {
                     self.lightingStatus = .dark
                 } else {
                     self.lightingStatus = .good
                 }
-                
+
                 let centerX = result.boundingBox.midX
                 let centerY = result.boundingBox.midY
                 self.isFaceCentered = abs(centerX - 0.5) < 0.15 && abs(centerY - 0.5) < 0.15
@@ -353,13 +388,49 @@ class FaceRecognitionViewModel: ObservableObject {
         processingQueue.async { [weak self] in
             let handler = VNImageRequestHandler(cvPixelBuffer: sendableBuffer.buffer, orientation: .up, options: [:])
             do {
-                try handler.perform([request, faceCaptureRequest])
+                try handler.perform([rectanglesRequest, landmarksRequest, faceCaptureRequest])
             } catch {
                 Task { @MainActor [weak self] in
                     self?.isProcessingFrame = false
                 }
+                return
+            }
+
+            let rectResults = (rectanglesRequest.results as? [VNFaceObservation]) ?? []
+            let landmarkResults = (landmarksRequest.results as? [VNFaceObservation]) ?? []
+
+            // Attach landmarks where a matching face was also found by the landmarks pass;
+            // otherwise keep the rectangles-only observation so masked faces still show up.
+            let merged: [VNFaceObservation] = rectResults.map { rectObs in
+                landmarkResults.first { FaceRecognitionViewModel.iou($0.boundingBox, rectObs.boundingBox) > 0.5 } ?? rectObs
+            }
+
+            Task { @MainActor [weak self] in
+                guard let self = self else { return }
+
+                // Mask state must be known before building the display model, so the
+                // mouth/nose contour can be suppressed instead of flickering per-frame.
+                self.updateMaskDetection(buffer: sendableBuffer.buffer, observations: merged)
+                self.updateFaceResults(with: merged)
+                self.isProcessingFrame = false
+
+                if self.recognitionTask == nil {
+                    self.recognitionTask = Task {
+                        await self.performRecognition(on: sendableBuffer.buffer, observations: merged)
+                        self.recognitionTask = nil
+                    }
+                }
             }
         }
+    }
+
+    private static func iou(_ a: CGRect, _ b: CGRect) -> CGFloat {
+        let inter = a.intersection(b)
+        guard !inter.isNull, !inter.isEmpty else { return 0 }
+        let interArea = inter.width * inter.height
+        let unionArea = a.width * a.height + b.width * b.height - interArea
+        guard unionArea > 0 else { return 0 }
+        return interArea / unionArea
     }
 
     private func updateFaceResults(with observations: [VNFaceObservation]) {
@@ -373,12 +444,17 @@ class FaceRecognitionViewModel: ObservableObject {
                         CGPoint(x: rect.origin.x + pt.x * rect.width, y: rect.origin.y + pt.y * rect.height)
                     }
                 }
-                face.landmarks["outer"] = transform(landmarks.faceContour?.normalizedPoints)
                 face.landmarks["leftEye"] = transform(landmarks.leftEye?.normalizedPoints)
                 face.landmarks["rightEye"] = transform(landmarks.rightEye?.normalizedPoints)
-                face.landmarks["nose"] = transform(landmarks.nose?.normalizedPoints)
-                face.landmarks["lips"] = transform(landmarks.outerLips?.normalizedPoints)
-                
+
+                // Nose/mouth/contour are unreliable (Vision sometimes still guesses at
+                // them) once a mask is flagged, so suppress them instead of letting the
+                // outline flicker between a full face and a partial one every frame.
+                if !isMaskDetected {
+                    face.landmarks["outer"] = transform(landmarks.faceContour?.normalizedPoints)
+                    face.landmarks["nose"] = transform(landmarks.nose?.normalizedPoints)
+                    face.landmarks["lips"] = transform(landmarks.outerLips?.normalizedPoints)
+                }
             }
             if index < self.detectedFaces.count {
                 face.name = self.detectedFaces[index].name
@@ -390,6 +466,106 @@ class FaceRecognitionViewModel: ObservableObject {
             newFaces.append(face)
         }
         self.detectedFaces = newFaces
+    }
+
+    // MARK: - Mask Detection (heuristic)
+    // No mask-classifier model is bundled (to avoid using a pretrained model of unclear
+    // license). Instead we compare the average color of the nose/mouth/chin area against
+    // an eye-level cheek patch — mask fabric color usually diverges from skin tone there,
+    // while an unobstructed lower face stays close to the reference. Approximate, but
+    // requires no extra assets.
+    private func updateMaskDetection(buffer: CVPixelBuffer, observations: [VNFaceObservation]) {
+        guard let primary = observations.max(by: { $0.boundingBox.width < $1.boundingBox.width }) else {
+            maskScore = 0
+            isMaskDetected = false
+            return
+        }
+
+        // Hysteresis counter instead of a strict consecutive-frame streak: a single noisy
+        // reading no longer resets progress to zero, so a real mask still gets flagged
+        // even if a frame or two reads as "clear", and a real face doesn't flicker off
+        // from a single false-positive frame either.
+        if detectMaskHeuristically(buffer: buffer, observation: primary) {
+            maskScore = min(maskScore + 1, maskScoreMax)
+        } else {
+            maskScore = max(maskScore - 1, 0)
+        }
+
+        if !isMaskDetected && maskScore >= maskOnScore {
+            isMaskDetected = true
+        } else if isMaskDetected && maskScore <= maskOffScore {
+            isMaskDetected = false
+        }
+    }
+
+    private func detectMaskHeuristically(buffer: CVPixelBuffer, observation: VNFaceObservation) -> Bool {
+        let ciImage = CIImage(cvPixelBuffer: buffer)
+        let width = CGFloat(CVPixelBufferGetWidth(buffer))
+        let height = CGFloat(CVPixelBufferGetHeight(buffer))
+        let rect = observation.boundingBox
+        guard rect.width > 0, rect.height > 0 else { return false }
+
+        func regionRect(x: ClosedRange<CGFloat>, y: ClosedRange<CGFloat>) -> CGRect {
+            let x0 = rect.minX + x.lowerBound * rect.width
+            let x1 = rect.minX + x.upperBound * rect.width
+            let y0 = rect.minY + y.lowerBound * rect.height
+            let y1 = rect.minY + y.upperBound * rect.height
+            return CGRect(x: x0 * width, y: y0 * height, width: (x1 - x0) * width, height: (y1 - y0) * height)
+        }
+
+        // Vision's normalized space is bottom-left origin, y-up — same as CIImage's.
+        // Deliberately avoid the lips/mouth: they're naturally a different color from
+        // forehead skin (redder, more saturated) even with no mask at all, which was
+        // causing false positives that never cleared. The chin tip just below the mouth
+        // is bare skin on an unmasked face and should closely match the forehead — but
+        // gets covered by fabric the moment a mask is worn.
+        //
+        // Both regions are pulled in from the box edges: the old forehead patch sat right
+        // at the top of the box and regularly sampled hairline/bangs instead of skin
+        // (contaminating the reference color for anyone with visible bangs), and the old
+        // chin patch sat right at the bottom edge, which can land on exposed neck below a
+        // loosely worn mask, or on chin shadow when unmasked.
+        let lowerFaceRegion = regionRect(x: 0.38...0.62, y: 0.06...0.16)      // chin, pulled up from the box edge
+        let referenceSkinRegion = regionRect(x: 0.38...0.62, y: 0.60...0.74) // mid-forehead, below the hairline
+
+        guard let lower = averageColor(of: ciImage, in: lowerFaceRegion),
+              let reference = averageColor(of: ciImage, in: referenceSkinRegion) else { return false }
+
+        // Compare chromaticity (brightness-normalized color ratios), not raw RGB. Shadow
+        // and lighting angle alone can shift the chin patch's brightness a lot relative to
+        // the forehead patch on a completely bare face, which was swamping the raw-RGB
+        // distance and causing false positives. Mask fabric genuinely differs in hue from
+        // skin, and that difference survives after brightness is normalized out.
+        guard let lowerChroma = chromaticity(of: lower),
+              let referenceChroma = chromaticity(of: reference) else { return false }
+
+        let dr = lowerChroma.r - referenceChroma.r
+        let dg = lowerChroma.g - referenceChroma.g
+        return sqrt(dr * dr + dg * dg) * chromaScale > maskColorDistanceThreshold
+    }
+
+    // Scales the ~0...1 chromaticity distance back up to roughly the old raw-RGB
+    // distance's range, so the existing slider (10...60) and any saved user defaults
+    // still mean approximately what they used to.
+    private let chromaScale: Float = 300
+
+    private func chromaticity(of color: (r: Float, g: Float, b: Float)) -> (r: Float, g: Float)? {
+        let total = color.r + color.g + color.b
+        // Too dark for the ratio to be meaningful — treat as inconclusive rather than
+        // let sensor noise dominate the normalized result.
+        guard total > 30 else { return nil }
+        return (color.r / total, color.g / total)
+    }
+
+    private func averageColor(of image: CIImage, in rect: CGRect) -> (r: Float, g: Float, b: Float)? {
+        guard rect.width >= 4, rect.height >= 4 else { return nil }
+        let extent = CIVector(x: rect.origin.x, y: rect.origin.y, z: rect.width, w: rect.height)
+        guard let filter = CIFilter(name: "CIAreaAverage", parameters: [kCIInputImageKey: image, kCIInputExtentKey: extent]),
+              let output = filter.outputImage else { return nil }
+
+        var pixel = [UInt8](repeating: 0, count: 4)
+        ciContext.render(output, toBitmap: &pixel, rowBytes: 4, bounds: CGRect(x: 0, y: 0, width: 1, height: 1), format: .RGBA8, colorSpace: CGColorSpaceCreateDeviceRGB())
+        return (Float(pixel[0]), Float(pixel[1]), Float(pixel[2]))
     }
 
     private func performRecognition(on buffer: CVPixelBuffer, observations: [VNFaceObservation]) async {
@@ -421,8 +597,8 @@ class FaceRecognitionViewModel: ObservableObject {
                         let status = self.store.getTodayStatus(for: best.name)
                         self.detectedFaces[index].attendanceStatus = status
 
-                        if effectiveSimilarity > 0.85 && hasMargin {
-                            self.updateRecognitionHistory(name: best.name)
+                        if effectiveSimilarity > 0.85 && hasMargin && !self.isMaskDetected {
+                            self.updateRecognitionHistory(candidate: best, embedding: embedding)
                         }
                     }
                 }
@@ -430,7 +606,10 @@ class FaceRecognitionViewModel: ObservableObject {
         }
     }
 
-    private func updateRecognitionHistory(name: String) {
+    private func updateRecognitionHistory(candidate: Candidate, embedding: [Float]) {
+        guard !candidate.isVisitor else { return }
+
+        let name = candidate.name
         // Increment recognition count
         recognitionHistory[name] = (recognitionHistory[name] ?? 0) + 1
 
@@ -444,9 +623,13 @@ class FaceRecognitionViewModel: ObservableObject {
 
         // Check if stable recognition
         if let count = recognitionHistory[name], count >= recognitionThreshold {
-            if lastRecognizedName != name {
-                lastRecognizedName = name
+            if lastRecognizedKey != candidate.id {
+                lastRecognizedKey = candidate.id
                 recognizedUserName = name
+                // Kept for the checkIn/checkOut that follows, so the confidently-matched
+                // frame can be folded back into the user's stored signatures.
+                pendingAttendanceUserId = candidate.userId
+                pendingAttendanceEmbedding = embedding
                 shouldAutoAttendance = true
 
                 // Haptic feedback
@@ -459,6 +642,14 @@ class FaceRecognitionViewModel: ObservableObject {
     func resetAutoAttendance() {
         shouldAutoAttendance = false
         recognitionHistory.removeAll()
+        pendingAttendanceUserId = nil
+        pendingAttendanceEmbedding = nil
+    }
+
+    func resetAfterRegistration(employeeName: String) {
+        shouldAutoAttendance = false
+        recognitionHistory.removeAll()
+        lastRecognizedKey = store.user(named: employeeName)?.id ?? employeeName
     }
 
     private func applySmoothResults(at index: Int, newName: String, newSimilarity: Float, embedding: [Float]) {
@@ -501,17 +692,12 @@ class FaceRecognitionViewModel: ObservableObject {
     }
 
     // MARK: - Optimized Matching with SIMD + Centroid
-    // MARK: - Tuning Parameters
-    // alpha: 시간 평활화 강도 (낮을수록 안정, 높을수록 빠름) 권장: 0.25~0.40
-    private let smoothingAlpha: Float = 0.30
-    // centroidWeight: 평균벡터 가중치 (높을수록 안정적) 권장: 0.65~0.80
+    // MARK: - Tuning Parameters (UserDefaults-backed, editable from Settings)
     private let centroidWeight: Float = 0.75
-    // matchThreshold: 인식 판정 임계값 권장: 0.76~0.84
-    private let matchThreshold: Float = 0.78
-    // dropThreshold: 인식 해제 임계값 (matchThreshold보다 낮게) 권장: 0.68~0.74
-    private let dropThreshold: Float = 0.70
-    // marginRequired: 1위-2위 최소 차이 권장: 0.03~0.06
-    private let marginRequired: Float = 0.04
+    @Published var matchThreshold: Float = 0.70
+    @Published var dropThreshold: Float = 0.60
+    @Published var smoothingAlpha: Float = 0.25
+    @Published var marginRequired: Float = 0.04
 
     private func findTopMatchesOptimized(for embedding: [Float], count: Int = 5) async -> [Candidate] {
         if userCentroidCache.isEmpty {
@@ -521,12 +707,12 @@ class FaceRecognitionViewModel: ObservableObject {
 
         var allMatches: [Candidate] = []
 
-        for (name, centroid) in userCentroidCache {
+        for (user, centroid) in userCentroidCache {
             let centroidSim = cosineSimilarity(embedding, centroid)
 
             // Best individual sample similarity
             var bestIndividualSim: Float = centroidSim
-            if let sigs = userEmbeddingsCache.first(where: { $0.name == name })?.embeddings {
+            if let sigs = userEmbeddingsCache.first(where: { $0.user.id == user.id })?.embeddings {
                 let sampled = sigs.count > 20 ? Array(sigs.suffix(20)) : sigs
                 for saved in sampled {
                     let sim = cosineSimilarity(embedding, saved)
@@ -536,8 +722,16 @@ class FaceRecognitionViewModel: ObservableObject {
 
             // Weighted blend (more centroid = more stable across frames)
             let blendedSim = centroidSim * centroidWeight + bestIndividualSim * (1.0 - centroidWeight)
-            let status = store.getTodayStatus(for: name)
-            allMatches.append(Candidate(name: name, similarity: blendedSim, status: status))
+            let status = user.isVisitor ? .notCheckedIn : store.getTodayStatus(for: user.name)
+            allMatches.append(Candidate(
+                userId: user.id,
+                name: user.name,
+                department: user.department,
+                userType: user.userType,
+                visitPurpose: user.visitPurpose,
+                similarity: blendedSim,
+                status: status
+            ))
         }
 
         return allMatches.sorted { $0.similarity > $1.similarity }.prefix(count).map { $0 }
@@ -694,6 +888,9 @@ class FaceRecognitionViewModel: ObservableObject {
     }
 
     private func collectSample(_ embedding: [Float], yaw: NSNumber?, pitch: NSNumber? = nil) async {
+        // Don't collect samples while a mask is detected — ask the user to remove it instead
+        if isMaskDetected { return }
+
         // Simple time-based throttle
         if Date().timeIntervalSince(lastSampleTime) < 0.15 { return }
 
@@ -707,7 +904,7 @@ class FaceRecognitionViewModel: ObservableObject {
 
         // Quality gate: reject low quality samples
         let quality = await MainActor.run { self.faceCaptureQuality }
-        if quality < 0.3 { return } // Reject blurry/dark samples
+        if quality < 0.18 { return } // Reject blurry/dark samples
 
         // Prefer different angles but don't block if same angle
         if let lastYaw = lastSampleYaw, tempSignatures.count < requiredSamples - 3 {
@@ -735,6 +932,22 @@ class FaceRecognitionViewModel: ObservableObject {
 
     func finalizeRegistration(name: String) {
         store.saveUser(FaceUser(id: UUID().uuidString, name: name, department: "本社", faceSignatures: tempSignatures))
+        finishRegistration(name: name)
+    }
+
+    func finalizeVisitorRegistration(name: String, company: String, purpose: String) {
+        store.saveUser(FaceUser(
+            id: UUID().uuidString,
+            name: name,
+            department: company,
+            faceSignatures: tempSignatures,
+            userType: .visitor,
+            visitPurpose: purpose
+        ))
+        finishRegistration(name: name)
+    }
+
+    private func finishRegistration(name: String) {
         tempSignatures = []
         registrationProgress = 0
 
@@ -749,6 +962,15 @@ class FaceRecognitionViewModel: ObservableObject {
         }
     }
 
+    func currentFrameJPEGBase64() -> String? {
+        guard let buffer = cameraManager.currentBuffer else { return nil }
+        let image = CIImage(cvPixelBuffer: buffer)
+        guard let cgImage = ciContext.createCGImage(image, from: image.extent) else { return nil }
+        let uiImage = UIImage(cgImage: cgImage)
+        guard let data = uiImage.jpegData(compressionQuality: 0.75) else { return nil }
+        return "data:image/jpeg;base64,\(data.base64EncodedString())"
+    }
+
     // MARK: - Attendance Actions
     func performAutoAttendance() {
         guard !recognizedUserName.isEmpty else { return }
@@ -759,9 +981,11 @@ class FaceRecognitionViewModel: ObservableObject {
         case .notCheckedIn:
             store.checkIn(userName: recognizedUserName)
             authStatus = "\(recognizedUserName)さん 出勤しました"
+            saveAttendanceEmbedding(for: recognizedUserName)
         case .checkedIn:
             store.checkOut(userName: recognizedUserName)
             authStatus = "\(recognizedUserName)さん 退勤しました"
+            saveAttendanceEmbedding(for: recognizedUserName)
         case .checkedOut:
             authStatus = "\(recognizedUserName)さんは既に退勤済みです"
         }
@@ -775,6 +999,21 @@ class FaceRecognitionViewModel: ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
             self.authStatus = "顔を認識してください"
         }
+    }
+
+    /// Folds the embedding behind a confirmed attendance event back into that person's
+    /// stored signatures, so recognition keeps adapting (lighting, aging, angle, glasses)
+    /// without requiring a full re-registration. Only called for high-confidence matches
+    /// (see updateRecognitionHistory), so misrecognitions can't poison the stored
+    /// signatures — and only applied when `name` actually matches who the pending
+    /// embedding was captured for, since the confirmed name can differ from the primarily
+    /// tracked face (e.g. picking a secondary candidate from the list), and saving the
+    /// wrong embedding would corrupt that person's stored signatures.
+    func saveAttendanceEmbedding(for name: String) {
+        guard let userId = pendingAttendanceUserId,
+              let embedding = pendingAttendanceEmbedding,
+              store.users.first(where: { $0.id == userId })?.name == name else { return }
+        store.appendSignature(userId: userId, vector: embedding)
     }
 
     // MARK: - Backup & Restore

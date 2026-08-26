@@ -3,15 +3,20 @@ import AVFoundation
 import UniformTypeIdentifiers
 import Combine
 import Charts
+import Darwin
 
 struct ContentView: View {
     @StateObject var viewModel = FaceRecognitionViewModel()
     @StateObject var apiService = APIService.shared
+    @Environment(\.scenePhase) private var scenePhase
 
     @State private var showingSettings = false
     @State private var showingFaceRegistration = false
+    @State private var showingVisitorRegistration = false
     @State private var selectedRegistrationEmployee: Employee? = nil
     @State private var showingSuccessOverlay = false
+    @State private var showingVisitorReceptionAlert = false
+    @State private var visitorReceptionAlertID = UUID()
     @State private var showingPasswordPrompt = false
     @State private var showingStats = false
 
@@ -20,38 +25,99 @@ struct ContentView: View {
     @State private var pendingType: AttendanceType = .checkIn
     @State private var showingCandidateConfirm = false
 
+    // Early check-in time choice (before 09:00)
+    @State private var showingEarlyCheckInChoice = false
+    @State private var pendingEarlyCheckInName: String = ""
+
     @State private var attendanceMessage = ""
     @State private var attendanceType: AttendanceType = .checkIn
+    @State private var successKind: SuccessKind = .attendance
     @State private var passwordInput = ""
     @State private var passwordError = false
 
     @State private var isScanning = false
     @State private var currentTime = Date()
+    @State private var lastAttendanceRefreshDay = Calendar.current.startOfDay(for: Date())
+
+    @State private var showingConsent = false
+    @State private var pendingConsentEmployeeName: String = ""
+
+    @State private var deviceIPv4Address: String? = nil
+    @State private var deviceIPv6Address: String? = nil
 
     private let settingsPassword = "20170201"
 
     let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
+    let ipRefreshTimer = Timer.publish(every: 60, on: .main, in: .common).autoconnect()
+
+    /// Reads the Wi-Fi interface's (en0) own addresses directly instead of asking an external
+    /// service. IPv4 is always NAT'd behind the office router, so an external lookup only ever
+    /// returns the router's shared public IP (e.g. 59.128.x.x) — never the device's own
+    /// 192.168.x.x address. IPv6 has no NAT, so the interface's global address is already the
+    /// same one the backend sees. Link-local (fe80::) addresses are skipped for v6.
+    private func refreshDeviceIPAddress() {
+        var v4: String? = nil
+        var v6: String? = nil
+
+        var ifaddrPtr: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&ifaddrPtr) == 0, let firstAddr = ifaddrPtr else { return }
+        defer { freeifaddrs(ifaddrPtr) }
+
+        for ptr in sequence(first: firstAddr, next: { $0.pointee.ifa_next }) {
+            let interface = ptr.pointee
+            guard String(cString: interface.ifa_name) == "en0" else { continue }
+
+            let family = interface.ifa_addr.pointee.sa_family
+            var hostname = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            let result = getnameinfo(interface.ifa_addr, socklen_t(interface.ifa_addr.pointee.sa_len),
+                                      &hostname, socklen_t(hostname.count), nil, 0, NI_NUMERICHOST)
+            guard result == 0 else { continue }
+            let address = String(cString: hostname)
+
+            if family == UInt8(AF_INET) {
+                v4 = address
+            } else if family == UInt8(AF_INET6), !address.hasPrefix("fe80:") {
+                v6 = address
+            }
+        }
+
+        if deviceIPv4Address != v4 { deviceIPv4Address = v4 }
+        if deviceIPv6Address != v6 { deviceIPv6Address = v6 }
+    }
+
+    private var safeAreaTop: CGFloat {
+        UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .first?.windows
+            .first(where: { $0.isKeyWindow })?
+            .safeAreaInsets.top ?? 0
+    }
+
+    enum SuccessKind {
+        case attendance
+        case visitorRequest
+    }
 
     var body: some View {
         GeometryReader { geometry in
             let isLandscape = geometry.size.width > geometry.size.height
-            
+
             ZStack {
                 // Camera + Background
                 backgroundView
-                
+
                 // UI Overlay
                 VStack(spacing: 0) {
-                    headerView(safeAreaTop: geometry.safeAreaInsets.top)
+                    headerView(safeAreaTop: safeAreaTop)
                         .padding(.horizontal, 20)
-                    
+
                     if isLandscape {
                         HStack(alignment: .bottom, spacing: 20) {
                             mainContentArea
-                            
+
                             Spacer()
-                            
-                            if let face = viewModel.detectedFaces.first(where: { $0.rawSimilarity > 0.72 }) {
+
+                            if !viewModel.isMaskDetected, let face = viewModel.detectedFaces.first(where: { $0.rawSimilarity > 0.72 }) {
                                 recognizedUserPanel(face: face, geometry: geometry)
                                     .padding(.trailing, geometry.safeAreaInsets.trailing + 20)
                             } else {
@@ -63,37 +129,98 @@ struct ContentView: View {
                         .padding(.bottom, geometry.safeAreaInsets.bottom + 20)
                     } else {
                         Spacer()
-                        
+
                         mainContentArea
-                        
+
                         Spacer()
-                        
+
                         bottomSection(geometry: geometry)
                             .padding(.horizontal, 16)
                             .padding(.bottom, geometry.safeAreaInsets.bottom > 0 ? geometry.safeAreaInsets.bottom : 20)
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                
+
+                // Settings button — bottom left
+                VStack {
+                    Spacer()
+                    HStack {
+                        Button {
+                            showingPasswordPrompt = true
+                        } label: {
+                            Image(systemName: "gearshape.fill")
+                                .font(.system(size: 15))
+                                .foregroundColor(.white.opacity(0.6))
+                                .frame(width: 40, height: 40)
+                                .background(.ultraThinMaterial)
+                                .clipShape(Circle())
+                        }
+                        .padding(.leading, geometry.safeAreaInsets.leading + 20)
+                        .padding(.bottom, geometry.safeAreaInsets.bottom + 20)
+                        Spacer()
+                    }
+                }
+
                 // Success Overlay
                 if showingSuccessOverlay {
                     successOverlayView
                         .zIndex(100)
                 }
-                
 
+                // Mask Warning Overlay
+                if viewModel.isMaskDetected {
+                    maskWarningOverlay
+                        .zIndex(101)
+                }
+            }
+            .alert("来訪受付完了", isPresented: $showingVisitorReceptionAlert) {
+            } message: {
+                Text("訪問依頼を送信しました。少々お待ちください。\nこの画面は数秒後に自動で閉じます。")
             }
         }
         .ignoresSafeArea()
-        .onReceive(timer) { _ in currentTime = Date() }
+        .onReceive(timer) { _ in
+            currentTime = Date()
+            let today = Calendar.current.startOfDay(for: currentTime)
+            if today != lastAttendanceRefreshDay {
+                lastAttendanceRefreshDay = today
+                viewModel.store.refreshToday()
+                Task { await apiService.loadEmployees() }
+            }
+        }
+        .onReceive(ipRefreshTimer) { _ in refreshDeviceIPAddress() }
         .onAppear {
             withAnimation(.easeInOut(duration: 0.8).repeatForever()) { isScanning = true }
+            refreshDeviceIPAddress()
+        }
+        .onChange(of: scenePhase) { _, phase in
+            // The capture session is first started while the ViewModel is constructed,
+            // which on cold launch can happen before the scene is actually active — on some
+            // devices AVCaptureSession.startRunning() then silently stalls until something
+            // (e.g. the first touch) pumps the run loop. Retrying once the scene is
+            // confirmedly .active makes recognition start on its own, with no tap needed.
+            if phase == .active {
+                viewModel.cameraManager.start()
+            }
         }
         .sheet(isPresented: $showingSettings) {
             SettingsView(viewModel: viewModel)
         }
         .sheet(isPresented: $showingStats) {
             StatsView(viewModel: viewModel)
+        }
+        .sheet(isPresented: $showingConsent) {
+            ConsentModalView(employeeName: pendingConsentEmployeeName) { name in
+                viewModel.store.saveConsent(userName: name, consentVersion: "v1.0-2026-06-19")
+                selectedRegistrationEmployee = apiService.employees.first { $0.userName == name }
+                showingConsent = false
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                    showingFaceRegistration = true
+                }
+            } onCancel: {
+                // Do nothing
+            }
+            .presentationDetents([.medium, .large])
         }
         .onChange(of: showingSettings) { _, isPresented in
             if !isPresented {
@@ -128,9 +255,20 @@ struct ContentView: View {
         .fullScreenCover(isPresented: $showingFaceRegistration) {
             FaceRegistrationView(viewModel: viewModel, preselectedEmployee: selectedRegistrationEmployee)
         }
+        .fullScreenCover(isPresented: $showingVisitorRegistration) {
+            FaceRegistrationView(viewModel: viewModel, mode: .visitor)
+        }
         .onChange(of: showingFaceRegistration) { _, isPresented in
             if !isPresented {
+                let registeredName = selectedRegistrationEmployee?.userName ?? ""
                 selectedRegistrationEmployee = nil
+                viewModel.resetAfterRegistration(employeeName: registeredName)
+                viewModel.cameraManager.start()
+                viewModel.refreshID = UUID()
+            }
+        }
+        .onChange(of: showingVisitorRegistration) { _, isPresented in
+            if !isPresented {
                 viewModel.cameraManager.start()
                 viewModel.refreshID = UUID()
             }
@@ -143,25 +281,30 @@ struct ContentView: View {
         } message: {
             Text("\(pendingName)さん、\(pendingType == .checkIn ? "出勤" : "退勤")しますか？")
         }
+        .confirmationDialog("出勤時刻を選択してください", isPresented: $showingEarlyCheckInChoice, titleVisibility: .visible) {
+            Button("現在時刻（\(timeString(Date()))）で出勤") {
+                performAttendance(name: pendingEarlyCheckInName, type: .checkIn, checkInDate: Date())
+            }
+            Button("9:00で出勤") {
+                performAttendance(name: pendingEarlyCheckInName, type: .checkIn, checkInDate: nineAMToday())
+            }
+            Button("キャンセル", role: .cancel) {}
+        } message: {
+            Text("現在9時前です。出勤時刻を選んでください")
+        }
         .task {
             await apiService.loadEmployees()
+            await apiService.loadVisitors()
             // Refresh every 60 seconds
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 60_000_000_000)
                 await apiService.silentRefresh()
+                await apiService.loadVisitors()
             }
         }
         .onChange(of: viewModel.shouldAutoAttendance) { _, shouldShow in
             if shouldShow {
-                if let face = viewModel.detectedFaces.first,
-                   let candidate = face.candidates.first {
-                    let serverStatus = apiService.employee(named: candidate.name)?.serverStatus ?? .notCheckedIn
-                    guard serverStatus != .checkedOut else {
-                        viewModel.resetAutoAttendance()
-                        return
-                    }
-                    executeAttendance(name: candidate.name, type: serverStatus == .notCheckedIn ? .checkIn : .checkOut)
-                }
+                viewModel.resetAutoAttendance()
             }
         }
     }
@@ -170,8 +313,8 @@ struct ContentView: View {
     
     private var cameraLayer: some View {
         Group {
-            if viewModel.cameraManager.isAuthorized && !showingFaceRegistration && !showingSettings {
-                 CameraPreviewView(session: viewModel.cameraManager.session, rotationAngle: viewModel.rotationAngle, faces: viewModel.detectedFaces)
+            if viewModel.cameraManager.isAuthorized && !showingFaceRegistration && !showingVisitorRegistration && !showingSettings {
+                 CameraPreviewView(session: viewModel.cameraManager.session, rotationAngle: viewModel.rotationAngle, faces: viewModel.detectedFaces, isMaskDetected: viewModel.isMaskDetected)
                     .id(viewModel.refreshID) // Force view refresh
                     .ignoresSafeArea()
                     .onReceive(viewModel.cameraManager.$currentBuffer) { buffer in
@@ -229,41 +372,47 @@ struct ContentView: View {
                 Text("Smart Attendance")
                     .font(.system(size: 20, weight: .bold, design: .rounded))
                     .foregroundColor(.white)
-                
+
                 Text(dateString)
                     .font(.system(size: 11, weight: .medium))
                     .foregroundColor(.white.opacity(0.5))
             }
-            
+
             Spacer()
-            
-            Text(timeString)
-                .font(.system(size: 16, weight: .semibold, design: .monospaced))
-                .foregroundColor(.white.opacity(0.7))
+
+            if deviceIPv4Address != nil || deviceIPv6Address != nil {
+                HStack(alignment: .center, spacing: 6) {
+                    Image(systemName: "wifi")
+                        .font(.system(size: 12, weight: .semibold))
+
+                    VStack(alignment: .leading, spacing: 1) {
+                        if let ip = deviceIPv4Address {
+                            Text("v4  \(ip)")
+                                .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                        }
+                        if let ip = deviceIPv6Address {
+                            Text("v6  \(ip)")
+                                .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                        }
+                    }
+                }
+                .foregroundColor(.white.opacity(0.9))
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(.ultraThinMaterial)
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                 .padding(.trailing, 8)
-            
-            HStack(spacing: 12) {
-                Button {
-                    showingStats = true
-                } label: {
-                    Image(systemName: "chart.bar.fill")
-                        .font(.system(size: 15))
-                        .foregroundColor(.white.opacity(0.8))
-                        .frame(width: 40, height: 40)
-                        .background(.ultraThinMaterial)
-                        .clipShape(Circle())
-                }
-                
-                Button {
-                    showingPasswordPrompt = true
-                } label: {
-                    Image(systemName: "gearshape.fill")
-                        .font(.system(size: 15))
-                        .foregroundColor(.white.opacity(0.8))
-                        .frame(width: 40, height: 40)
-                        .background(.ultraThinMaterial)
-                        .clipShape(Circle())
-                }
+            }
+
+            Button {
+                showingStats = true
+            } label: {
+                Image(systemName: "chart.bar.fill")
+                    .font(.system(size: 15))
+                    .foregroundColor(.white.opacity(0.8))
+                    .frame(width: 40, height: 40)
+                    .background(.ultraThinMaterial)
+                    .clipShape(Circle())
             }
         }
         .padding(.top, max(safeAreaTop, 20))
@@ -343,12 +492,6 @@ struct ContentView: View {
         context.draw(resolvedText, at: CGPoint(x: backgroundRect.midX, y: backgroundRect.midY))
     }
 
-    private var timeString: String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "HH:mm:ss"
-        return formatter.string(from: currentTime)
-    }
-
     private var dateString: String {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy年MM月dd日 (E)"
@@ -396,7 +539,10 @@ struct ContentView: View {
     // MARK: - Bottom Section
     private func bottomSection(geometry: GeometryProxy) -> some View {
         VStack(spacing: 12) {
-            if let face = viewModel.detectedFaces.first(where: { !$0.candidates.isEmpty }) {
+            if viewModel.isMaskDetected {
+                // Mask prompt already covers the screen — don't also show recognition candidates
+                EmptyView()
+            } else if let face = viewModel.detectedFaces.first {
                 recognizedUserPanel(face: face, geometry: geometry)
             } else {
                 // No face: show nothing (clean)
@@ -416,142 +562,208 @@ struct ContentView: View {
     }
 
     private func recognizedUserPanel(face: FaceRecognitionViewModel.RecognizedFace, geometry: GeometryProxy) -> some View {
-        let emp = apiService.employee(named: face.name)
-        let status = emp?.serverStatus ?? .notCheckedIn
-        let bottomPad = max(geometry.safeAreaInsets.bottom, 16)
+        let candidate = face.candidates.first
+        let isRecognized = face.name != "未認証" && face.name != "認証中..." && !face.name.isEmpty && !face.candidates.isEmpty
+        let faceUser = isRecognized ? viewModel.store.user(named: face.name) : nil
+        let isVisitor = isRecognized && (candidate?.isVisitor ?? faceUser?.isVisitor ?? false)
+        let emp = isVisitor ? nil : apiService.employee(named: face.name)
+        let status = isVisitor ? .notCheckedIn : (emp?.serverStatus ?? .notCheckedIn)
+        let company = isRecognized && candidate?.department.isEmpty == false ? candidate?.department ?? "" : faceUser?.department ?? ""
 
         return VStack(spacing: 0) {
-            // Drag handle
-            Capsule()
-                .fill(Color.white.opacity(0.25))
-                .frame(width: 40, height: 4)
-                .padding(.top, 10)
-                .padding(.bottom, 14)
-
-            // ── Row: Avatar + Info ──
-            HStack(spacing: 14) {
-                // Avatar
+            HStack(spacing: 12) {
                 ZStack {
                     Circle()
                         .fill(LinearGradient(
-                            colors: status == .checkedIn ? [.green.opacity(0.8), .cyan.opacity(0.6)]
+                            colors: isVisitor ? [.mint.opacity(0.8), .teal.opacity(0.6)]
+                                  : status == .checkedIn ? [.green.opacity(0.8), .cyan.opacity(0.6)]
                                   : status == .checkedOut ? [.blue.opacity(0.7), .indigo.opacity(0.6)]
                                   : [Color(.systemGray4), Color(.systemGray5)],
                             startPoint: .topLeading, endPoint: .bottomTrailing))
-                        .frame(width: 56, height: 56)
-                    Text(String(face.name.prefix(1)))
-                        .font(.system(size: 22, weight: .bold))
+                        .frame(width: 38, height: 38)
+                    Text(isRecognized ? String(face.name.prefix(1)) : "?")
+                        .font(.system(size: 15, weight: .bold))
                         .foregroundColor(.white)
                 }
 
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(face.name)
-                        .font(.system(size: 22, weight: .bold, design: .rounded))
-                        .foregroundColor(.white)
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 6) {
+                        Text(isRecognized ? face.name : "未登録の顔")
+                            .font(.system(size: 15, weight: .bold, design: .rounded))
+                            .foregroundColor(.white)
+                            .lineLimit(1)
+                        Text(isRecognized ? "\(face.score)%" : "--")
+                            .font(.system(size: 12, weight: .heavy, design: .monospaced))
+                            .foregroundColor(face.score >= 85 ? .green : .yellow)
 
-                    // Work times
-                    if let inn = emp?.workIn, !inn.isEmpty, inn != "0" {
-                        HStack(spacing: 10) {
+                        if isRecognized {
+                            if isVisitor {
+                                compactVisitorReceptionButton(name: face.name, company: company)
+                            } else {
+                                compactAttendanceButton(name: face.name, status: status)
+                            }
+                        }
+                    }
+
+                    if isVisitor {
+                        Text(company.isEmpty ? "訪問者" : company)
+                            .font(.system(size: 10))
+                            .foregroundColor(.white.opacity(0.4))
+                    } else if let inn = emp?.workIn, !inn.isEmpty, inn != "0" {
+                        HStack(spacing: 6) {
                             Label(inn, systemImage: "sunrise.fill")
-                                .font(.system(size: 13, weight: .medium))
+                                .font(.system(size: 10, weight: .medium))
                                 .foregroundColor(.green)
                             if let out = emp?.workOut, !out.isEmpty, out != "0" {
                                 Label(out, systemImage: "sunset.fill")
-                                    .font(.system(size: 13, weight: .medium))
+                                    .font(.system(size: 10, weight: .medium))
                                     .foregroundColor(.orange)
                             }
                         }
                     } else {
-                        Text("本日未出勤")
-                            .font(.system(size: 12))
+                        Text(isRecognized ? "本日未出勤" : "訪問者登録または社員登録を選択してください")
+                            .font(.system(size: 10))
                             .foregroundColor(.white.opacity(0.4))
                     }
                 }
-
-                Spacer()
-
-                // Confidence badge
-                VStack(spacing: 2) {
-                    Text("\(face.score)%")
-                        .font(.system(size: 18, weight: .heavy, design: .monospaced))
-                        .foregroundColor(face.score >= 85 ? .green : .yellow)
-                    Text("一致度")
-                        .font(.system(size: 9))
-                        .foregroundColor(.white.opacity(0.4))
-                }
             }
-            .padding(.horizontal, 20)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 14)
 
-            // ── Main Action Button ──
-            attendanceButton(name: face.name, status: status)
-                .padding(.horizontal, 20)
-                .padding(.top, 16)
+            if !isRecognized {
+                unknownFaceActions
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 14)
+            }
 
-            // ── Candidate list (if >1) ──
-            if face.candidates.count > 1 {
+            if isRecognized && face.candidates.count > 1 {
+                Divider()
+                    .background(Color.white.opacity(0.1))
+                    .padding(.horizontal, 16)
+
                 VStack(spacing: 0) {
-                    Divider()
-                        .background(Color.white.opacity(0.1))
-                        .padding(.horizontal, 20)
-                        .padding(.top, 14)
-
-                    Text("他の候補")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(.white.opacity(0.35))
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 20)
-                        .padding(.top, 10)
-                        .padding(.bottom, 6)
-
-                    VStack(spacing: 2) {
-                        ForEach(Array(face.candidates.dropFirst().prefix(4).enumerated()), id: \.element.id) { idx, candidate in
-                            let cEmp = apiService.employee(named: candidate.name)
-                            let cStatus = cEmp?.serverStatus ?? .notCheckedIn
-                            Button {
+                    ForEach(Array(face.candidates.dropFirst().prefix(3).enumerated()), id: \.element.id) { idx, candidate in
+                        let cEmp = apiService.employee(named: candidate.name)
+                        let cStatus = candidate.isVisitor ? ServerAttendanceStatus.notCheckedIn : (cEmp?.serverStatus ?? .notCheckedIn)
+                        Button {
+                            if !candidate.isVisitor {
                                 pendingName = candidate.name
                                 pendingType = cStatus == .notCheckedIn ? .checkIn : .checkOut
                                 showingCandidateConfirm = true
-                            } label: {
-                                HStack(spacing: 10) {
-                                    Text("\(idx + 2)")
-                                        .font(.system(size: 11, weight: .bold, design: .rounded))
-                                        .foregroundColor(.white.opacity(0.35))
-                                        .frame(width: 18)
-                                    Text(candidate.name)
-                                        .font(.system(size: 14, weight: .medium))
-                                        .foregroundColor(.white.opacity(0.6))
-                                        .frame(maxWidth: .infinity, alignment: .leading)
-                                    Text("\(Int(candidate.similarity * 100))%")
-                                        .font(.system(size: 12, weight: .medium, design: .monospaced))
-                                        .foregroundColor(.white.opacity(0.35))
-                                    // Status dot
-                                    Circle()
-                                        .fill(cStatus == .checkedIn ? Color.green : cStatus == .checkedOut ? Color.blue : Color(.systemGray4))
-                                        .frame(width: 7, height: 7)
-                                    Image(systemName: cStatus == .notCheckedIn ? "arrow.up.circle" : "arrow.down.circle")
-                                        .font(.system(size: 14))
-                                        .foregroundColor(.white.opacity(0.5))
-                                }
-                                .padding(.horizontal, 20)
-                                .padding(.vertical, 11)
-                                .contentShape(Rectangle())
                             }
-                            .buttonStyle(.plain)
+                        } label: {
+                            HStack(spacing: 8) {
+                                Text("\(idx + 2)")
+                                    .font(.system(size: 10, weight: .bold))
+                                    .foregroundColor(.white.opacity(0.3))
+                                    .frame(width: 14)
+                                Text(candidate.name)
+                                    .font(.system(size: 13, weight: .medium))
+                                    .foregroundColor(.white.opacity(0.7))
+                                    .lineLimit(1)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                if candidate.isVisitor {
+                                    Text("訪問者")
+                                        .font(.system(size: 10, weight: .bold))
+                                        .foregroundColor(.white)
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 3)
+                                        .background(Color.mint.opacity(0.7))
+                                        .clipShape(Capsule())
+                                } else if cStatus != .checkedOut {
+                                    Text(cStatus == .notCheckedIn ? "出勤" : "退勤")
+                                        .font(.system(size: 10, weight: .bold))
+                                        .foregroundColor(.white)
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 3)
+                                        .background(cStatus == .notCheckedIn ? Color.blue.opacity(0.7) : Color.orange.opacity(0.7))
+                                        .clipShape(Capsule())
+                                } else {
+                                    Circle()
+                                        .fill(Color.blue)
+                                        .frame(width: 6, height: 6)
+                                }
+                            }
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 8)
+                            .contentShape(Rectangle())
                         }
+                        .buttonStyle(.plain)
                     }
                 }
+                .padding(.bottom, 4)
             }
-
-            Spacer(minLength: bottomPad)
         }
-        .frame(maxWidth: min(geometry.size.width - 24, 420))
-        .background(.ultraThinMaterial)
-        .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
-        .shadow(color: .black.opacity(0.25), radius: 24, y: -4)
-        .overlay(RoundedRectangle(cornerRadius: 28, style: .continuous)
-            .stroke(Color.white.opacity(0.12), lineWidth: 1))
+        .frame(maxWidth: min(geometry.size.width - 48, 340))
         .transition(.move(edge: .bottom).combined(with: .opacity))
         .animation(.spring(response: 0.4, dampingFraction: 0.82), value: face.name)
+    }
+
+    @ViewBuilder
+    private func compactAttendanceButton(name: String, status: ServerAttendanceStatus) -> some View {
+        switch status {
+        case .notCheckedIn:
+            Button {
+                pendingName = name
+                pendingType = .checkIn
+                showingCandidateConfirm = true
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: "sunrise.fill").font(.system(size: 12))
+                    Text("出勤").font(.system(size: 13, weight: .bold))
+                }
+                .foregroundColor(.white)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+                .background(LinearGradient(colors: [.blue, .cyan], startPoint: .leading, endPoint: .trailing))
+                .clipShape(Capsule())
+            }
+            .buttonStyle(.plain)
+
+        case .checkedIn:
+            Button {
+                pendingName = name
+                pendingType = .checkOut
+                showingCandidateConfirm = true
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: "sunset.fill").font(.system(size: 12))
+                    Text("退勤").font(.system(size: 13, weight: .bold))
+                }
+                .foregroundColor(.white)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+                .background(LinearGradient(colors: [.orange, .red.opacity(0.85)], startPoint: .leading, endPoint: .trailing))
+                .clipShape(Capsule())
+            }
+            .buttonStyle(.plain)
+
+        case .checkedOut:
+            Text("お疲れ様！")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundColor(.white.opacity(0.6))
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(Color.purple.opacity(0.3))
+                .clipShape(Capsule())
+        }
+    }
+
+    private func compactVisitorReceptionButton(name: String, company: String) -> some View {
+        Button {
+            sendVisitorReception(name: name, company: company)
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: "bell.badge.fill").font(.system(size: 12))
+                Text("来訪受付").font(.system(size: 13, weight: .bold))
+            }
+            .foregroundColor(.white)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .background(LinearGradient(colors: [.teal, .mint], startPoint: .leading, endPoint: .trailing))
+            .clipShape(Capsule())
+        }
+        .buttonStyle(.plain)
     }
 
     @ViewBuilder
@@ -598,19 +810,91 @@ struct ContentView: View {
         }
     }
 
+    private var unknownFaceActions: some View {
+        VStack(spacing: 10) {
+            Button {
+                showingVisitorRegistration = true
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "person.crop.circle.badge.plus").font(.title3)
+                    Text("訪問者登録").font(.system(size: 17, weight: .bold))
+                }
+                .foregroundColor(.white)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 17)
+                .background(LinearGradient(colors: [.teal, .mint], startPoint: .leading, endPoint: .trailing))
+                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            }
+            .buttonStyle(.plain)
+
+            Button {
+                showingPasswordPrompt = true
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "person.badge.plus").font(.title3)
+                    Text("社員登録").font(.system(size: 16, weight: .semibold))
+                }
+                .foregroundColor(.white.opacity(0.9))
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 15)
+                .background(Color.white.opacity(0.12))
+                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    private func visitorRecognizedButton(name: String, company: String) -> some View {
+        Button {
+            sendVisitorReception(name: name, company: company)
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: "bell.badge.fill").font(.title3)
+                Text("来訪受付").font(.system(size: 17, weight: .bold))
+            }
+            .foregroundColor(.white)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 18)
+            .background(LinearGradient(colors: [.teal, .mint], startPoint: .leading, endPoint: .trailing))
+            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func sendVisitorReception(name: String, company: String) {
+        Task {
+            do {
+                try await apiService.registerVisitor(company: company, name: name, purpose: "再訪問", photoBase64: viewModel.currentFrameJPEGBase64())
+                await apiService.loadVisitors()
+            } catch {
+                print("[Visitor] revisit API error: \(error)")
+            }
+        }
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
+        let alertID = UUID()
+        visitorReceptionAlertID = alertID
+        showingVisitorReceptionAlert = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+            guard visitorReceptionAlertID == alertID else { return }
+            showingVisitorReceptionAlert = false
+        }
+    }
+
     // MARK: - Success Toast
     private var successOverlayView: some View {
         VStack {
             HStack(spacing: 12) {
-                Image(systemName: attendanceType == .checkIn ? "sunrise.fill" : "sunset.fill")
+                Image(systemName: successKind == .visitorRequest ? "bell.badge.fill" : attendanceType == .checkIn ? "sunrise.fill" : "sunset.fill")
                     .font(.system(size: 22))
-                    .foregroundStyle(attendanceType == .checkIn
+                    .foregroundStyle(successKind == .visitorRequest
+                        ? LinearGradient(colors: [.teal, .mint], startPoint: .top, endPoint: .bottom)
+                        : attendanceType == .checkIn
                         ? LinearGradient(colors: [.blue, .cyan], startPoint: .top, endPoint: .bottom)
                         : LinearGradient(colors: [.orange, .red], startPoint: .top, endPoint: .bottom))
                     .symbolEffect(.bounce, value: showingSuccessOverlay)
 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(attendanceType == .checkIn ? "出勤完了" : "退勤完了")
+                    Text(successKind == .visitorRequest ? "来訪受付完了" : attendanceType == .checkIn ? "出勤完了" : "退勤完了")
                         .font(.system(size: 15, weight: .bold, design: .rounded))
                         .foregroundColor(.white)
                     Text(attendanceMessage)
@@ -651,11 +935,75 @@ struct ContentView: View {
         }
     }
 
+    private var maskWarningOverlay: some View {
+        VStack {
+            HStack(spacing: 12) {
+                Image(systemName: "facemask.fill")
+                    .font(.system(size: 22))
+                    .foregroundStyle(LinearGradient(colors: [.orange, .red], startPoint: .top, endPoint: .bottom))
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("顔を正面に向けてください")
+                        .font(.system(size: 15, weight: .bold, design: .rounded))
+                        .foregroundColor(.white)
+                    Text("認証のため、マスクを外してカメラをご覧ください")
+                        .font(.system(size: 12))
+                        .foregroundColor(.white.opacity(0.65))
+                }
+
+                Spacer()
+            }
+            .padding(.horizontal, 18)
+            .padding(.vertical, 14)
+            .background(.ultraThinMaterial)
+            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(Color.orange.opacity(0.4), lineWidth: 1))
+            .shadow(color: .black.opacity(0.2), radius: 16, y: 4)
+            .padding(.horizontal, 20)
+            .padding(.top, 60)
+
+            Spacer()
+        }
+        .transition(.move(edge: .top).combined(with: .opacity))
+        .animation(.spring(response: 0.4, dampingFraction: 0.8), value: viewModel.isMaskDetected)
+    }
+
     // MARK: - Helper Methods
+    private func nineAMToday() -> Date {
+        Calendar.current.date(bySettingHour: 9, minute: 0, second: 0, of: Date()) ?? Date()
+    }
+
+    private func timeString(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm"
+        formatter.locale = Locale(identifier: "ja_JP")
+        return formatter.string(from: date)
+    }
+
+    /// Full "yyyy-MM-dd HH:mm:ss" datetime, for the workIn value sent to the server API
+    /// (the backend stores this directly into a DATETIME column, so a bare "HH:mm" is rejected).
+    private func apiTimeString(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        return formatter.string(from: date)
+    }
+
     private func executeAttendance(name: String, type: AttendanceType) {
+        if type == .checkIn, Date() < nineAMToday() {
+            pendingEarlyCheckInName = name
+            showingEarlyCheckInChoice = true
+            return
+        }
+        performAttendance(name: name, type: type, checkInDate: Date())
+    }
+
+    private func performAttendance(name: String, type: AttendanceType, checkInDate: Date) {
+        successKind = .attendance
         attendanceType = type
         if type == .checkIn {
-            viewModel.store.checkIn(userName: name)
+            viewModel.store.checkIn(userName: name, at: checkInDate)
             attendanceMessage = "\(name)さんの出勤を記録しました"
         } else {
             viewModel.store.checkOut(userName: name)
@@ -665,8 +1013,25 @@ struct ContentView: View {
         withAnimation(.spring(response: 0.4, dampingFraction: 0.75)) {
             showingSuccessOverlay = true
         }
+        // Fold this confirmed match's embedding back into the person's stored
+        // signatures so future recognition (lighting, angle, glasses on/off) keeps
+        // improving without needing a full re-registration.
+        viewModel.saveAttendanceEmbedding(for: name)
         viewModel.resetAutoAttendance()
-        Task { await apiService.silentRefresh() }
+        Task {
+            if let emp = apiService.employee(named: name) {
+                do {
+                    if type == .checkIn {
+                        try await apiService.setWorkIn(userNo: emp.userNo, userName: emp.userName, workIn: apiTimeString(checkInDate))
+                    } else {
+                        try await apiService.setWorkOut(userNo: emp.userNo, userName: emp.userName)
+                    }
+                } catch {
+                    print("[Attendance] API error: \(error)")
+                }
+            }
+            await apiService.silentRefresh()
+        }
     }
 
     func convertPoint(_ pt: CGPoint, to size: CGSize) -> CGPoint {
@@ -710,6 +1075,11 @@ struct ContentView: View {
             width: rect.width * displayWidth,
             height: rect.height * displayHeight
         )
+    }
+    
+    private func requestRegistration(for employee: Employee) {
+        pendingConsentEmployeeName = employee.userName
+        showingConsent = true
     }
 }
 
@@ -776,7 +1146,7 @@ struct StatsView: View {
 // MARK: - Member Card Row
 struct MemberCardRow: View {
     let employee: Employee
-    let faceUser: FaceUser?
+    let faceUserCount: Int
 
     private var serverStatus: ServerAttendanceStatus { employee.serverStatus }
 
@@ -788,7 +1158,7 @@ struct MemberCardRow: View {
                     .stroke(statusColor.opacity(0.5), lineWidth: 2)
                     .frame(width: 50, height: 50)
                 Circle()
-                    .fill(faceUser != nil
+                    .fill(faceUserCount > 0
                         ? LinearGradient(colors: [.blue, .indigo], startPoint: .topLeading, endPoint: .bottomTrailing)
                         : LinearGradient(colors: [Color(.systemGray4), Color(.systemGray5)], startPoint: .topLeading, endPoint: .bottomTrailing))
                     .frame(width: 44, height: 44)
@@ -836,12 +1206,12 @@ struct MemberCardRow: View {
                 }
 
                 // Face registration badge
-                if faceUser != nil {
+                if faceUserCount > 0 {
                     HStack(spacing: 3) {
                         Image(systemName: "checkmark.circle.fill")
                             .font(.system(size: 10))
                             .foregroundColor(.blue.opacity(0.7))
-                        Text("顔登録済")
+                        Text(faceUserCount > 1 ? "顔登録済 (\(faceUserCount))" : "顔登録済")
                             .font(.system(size: 10))
                             .foregroundColor(.blue.opacity(0.7))
                     }
@@ -869,6 +1239,49 @@ struct MemberCardRow: View {
         case .checkedIn:    return .green
         case .checkedOut:   return .blue
         }
+    }
+}
+
+struct VisitorFaceRow: View {
+    let visitor: FaceUser
+
+    var body: some View {
+        HStack(spacing: 14) {
+            ZStack {
+                Circle()
+                    .fill(LinearGradient(colors: [.teal, .mint], startPoint: .topLeading, endPoint: .bottomTrailing))
+                    .frame(width: 44, height: 44)
+                Text(visitor.initials)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundColor(.white)
+            }
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(visitor.name)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundColor(.primary)
+                Text(visitor.department.isEmpty ? "会社名未入力" : visitor.department)
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                if let purpose = visitor.visitPurpose, !purpose.isEmpty {
+                    Text(purpose)
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+            }
+
+            Spacer()
+
+            HStack(spacing: 3) {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 10))
+                    .foregroundColor(.teal)
+                Text("顔登録済")
+                    .font(.system(size: 10))
+                    .foregroundColor(.teal)
+            }
+        }
+        .padding(.vertical, 5)
     }
 }
 
@@ -955,6 +1368,9 @@ struct SettingsView: View {
     @State private var showingFileImporter = false
     @State private var showingFaceRegistration = false
     @State private var selectedRegistrationEmployee: Employee? = nil
+    @State private var showingConsent = false
+    @State private var pendingConsentEmployeeName: String = ""
+    @State private var pendingFaceDeleteCandidates: [FaceUser] = []
 
     var body: some View {
         NavigationStack {
@@ -963,7 +1379,8 @@ struct SettingsView: View {
                 Picker("", selection: $selectedTab) {
                     Text("出退勤").tag(0)
                     Text("メンバー").tag(1)
-                    Text("設定").tag(2)
+                    Text("訪問者").tag(2)
+                    Text("設定").tag(3)
                 }
                 .pickerStyle(.segmented)
                 .padding()
@@ -974,6 +1391,8 @@ struct SettingsView: View {
                     attendanceTabView
                 case 1:
                     membersTabView
+                case 2:
+                    visitorsTabView
                 default:
                     settingsTabView
                 }
@@ -996,11 +1415,49 @@ struct SettingsView: View {
             } message: {
                 Text(alertMessage)
             }
+            .confirmationDialog(
+                "\(pendingFaceDeleteCandidates.first?.name ?? "")さんの顔データを削除しますか?",
+                isPresented: Binding(
+                    get: { !pendingFaceDeleteCandidates.isEmpty },
+                    set: { if !$0 { pendingFaceDeleteCandidates = [] } }
+                ),
+                titleVisibility: .visible
+            ) {
+                // A person can have multiple face-data entries (e.g. registered once
+                // without glasses, once with) — list each individually so one can be
+                // removed without deleting the others.
+                ForEach(pendingFaceDeleteCandidates) { user in
+                    Button("削除: \(user.registeredAt.formatted(date: .abbreviated, time: .shortened))", role: .destructive) {
+                        deleteFaceData(for: user)
+                        pendingFaceDeleteCandidates = []
+                    }
+                }
+                Button("キャンセル", role: .cancel) {
+                    pendingFaceDeleteCandidates = []
+                }
+            } message: {
+                Text(pendingFaceDeleteCandidates.count > 1
+                     ? "削除するデータを選んでください。この操作は取り消せません。"
+                     : "この操作は取り消せません。再度顔登録が必要になります。")
+            }
             .fullScreenCover(isPresented: $showingFaceRegistration) {
                 FaceRegistrationView(viewModel: viewModel, preselectedEmployee: selectedRegistrationEmployee)
             }
             .onChange(of: showingFaceRegistration) { _, isPresented in
                 if !isPresented { selectedRegistrationEmployee = nil }
+            }
+            .sheet(isPresented: $showingConsent) {
+                ConsentModalView(employeeName: pendingConsentEmployeeName) { name in
+                    viewModel.store.saveConsent(userName: name, consentVersion: "v1.0-2026-06-19")
+                    selectedRegistrationEmployee = apiService.employees.first { $0.userName == name }
+                    showingConsent = false
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                        showingFaceRegistration = true
+                    }
+                } onCancel: {
+                    // Do nothing
+                }
+                .presentationDetents([.medium, .large])
             }
             .task {
                 await apiService.loadEmployees()
@@ -1124,14 +1581,23 @@ struct SettingsView: View {
             } else {
                 List {
                     ForEach(apiService.employees) { employee in
-                        let faceUser = viewModel.store.users.first(where: { $0.name == employee.userName })
+                        let faceUsers = viewModel.store.users.filter { !$0.isVisitor && $0.name == employee.userName }
                         Button {
-                            selectedRegistrationEmployee = employee
-                            showingFaceRegistration = true
+                            pendingConsentEmployeeName = employee.userName
+                            showingConsent = true
                         } label: {
-                            MemberCardRow(employee: employee, faceUser: faceUser)
+                            MemberCardRow(employee: employee, faceUserCount: faceUsers.count)
                         }
                         .buttonStyle(.plain)
+                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                            if !faceUsers.isEmpty {
+                                Button(role: .destructive) {
+                                    pendingFaceDeleteCandidates = faceUsers
+                                } label: {
+                                    Label("顔データ削除", systemImage: "trash")
+                                }
+                            }
+                        }
                     }
                 }
                 .listStyle(.insetGrouped)
@@ -1141,6 +1607,71 @@ struct SettingsView: View {
             }
         }
         .navigationTitle("メンバー (\(apiService.employees.count)名)")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private var visitorsTabView: some View {
+        let localVisitors = viewModel.store.users.filter { $0.isVisitor }
+
+        return List {
+            Section("顔登録済") {
+                if localVisitors.isEmpty {
+                    HStack {
+                        Spacer()
+                        VStack(spacing: 10) {
+                            Image(systemName: "person.crop.circle.badge.questionmark")
+                                .font(.largeTitle)
+                                .foregroundColor(.secondary)
+                            Text("登録された訪問者はいません")
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+                        }
+                        .padding(.vertical, 30)
+                        Spacer()
+                    }
+                } else {
+                    ForEach(localVisitors) { visitor in
+                        VisitorFaceRow(visitor: visitor)
+                    }
+                    .onDelete { offsets in
+                        let visitorIndexes = offsets.compactMap { offset in
+                            viewModel.store.users.firstIndex(where: { $0.id == localVisitors[offset].id })
+                        }
+                        var indexSet = IndexSet()
+                        visitorIndexes.forEach { indexSet.insert($0) }
+                        viewModel.store.deleteUser(at: indexSet)
+                    }
+                }
+            }
+
+            Section("本日の訪問記録") {
+                if apiService.visitors.isEmpty {
+                    Text("現在入室中の訪問者はいません")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                } else {
+                    ForEach(apiService.visitors) { visitor in
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(visitor.name)
+                                .font(.subheadline.bold())
+                            Text([visitor.company, visitor.purpose].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " / "))
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                            if let checkIn = visitor.checkIn, !checkIn.isEmpty {
+                                Label(checkIn, systemImage: "door.left.hand.open")
+                                    .font(.caption2)
+                                    .foregroundColor(.teal)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .listStyle(.insetGrouped)
+        .refreshable {
+            await apiService.loadVisitors()
+        }
+        .navigationTitle("訪問者 (\(localVisitors.count)名)")
         .navigationBarTitleDisplayMode(.inline)
     }
 
@@ -1191,6 +1722,93 @@ struct SettingsView: View {
                     Text("1.0.0")
                         .foregroundColor(.secondary)
                 }
+            }
+
+            Section("認識精度") {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Text("認識閾値")
+                            .font(.subheadline)
+                        Spacer()
+                        Text(String(format: "%.2f", viewModel.matchThreshold))
+                            .font(.system(.subheadline, design: .monospaced))
+                            .foregroundColor(.blue)
+                    }
+                    Slider(value: $viewModel.matchThreshold, in: 0.60...0.90, step: 0.01)
+                        .tint(.blue)
+                        .onChange(of: viewModel.matchThreshold) { _, v in
+                            if viewModel.dropThreshold >= v - 0.04 {
+                                viewModel.dropThreshold = max(0.50, v - 0.08)
+                            }
+                        }
+                    Text("低い → 認識しやすい（誤認識増）　高い → 厳密（見逃し増）")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+                .padding(.vertical, 4)
+
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Text("解除閾値")
+                            .font(.subheadline)
+                        Spacer()
+                        Text(String(format: "%.2f", viewModel.dropThreshold))
+                            .font(.system(.subheadline, design: .monospaced))
+                            .foregroundColor(.orange)
+                    }
+                    Slider(value: $viewModel.dropThreshold, in: 0.50...0.80, step: 0.01)
+                        .tint(.orange)
+                    Text("認識後にこの値を下回ると未認証に戻る")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+                .padding(.vertical, 4)
+
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Text("反応速度")
+                            .font(.subheadline)
+                        Spacer()
+                        Text(String(format: "%.2f", viewModel.smoothingAlpha))
+                            .font(.system(.subheadline, design: .monospaced))
+                            .foregroundColor(.green)
+                    }
+                    Slider(value: $viewModel.smoothingAlpha, in: 0.10...0.60, step: 0.05)
+                        .tint(.green)
+                    Text("低い → 安定（ゆっくり）　高い → 素早く反応")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+                .padding(.vertical, 4)
+
+                Button {
+                    viewModel.resetThresholds()
+                } label: {
+                    Label("デフォルトに戻す (0.70 / 0.60 / 0.25)", systemImage: "arrow.counterclockwise")
+                        .font(.subheadline)
+                }
+            }
+
+            Section("マスク検知") {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Text("検知感度")
+                            .font(.subheadline)
+                        Spacer()
+                        Text(String(format: "%.0f", viewModel.maskColorDistanceThreshold))
+                            .font(.system(.subheadline, design: .monospaced))
+                            .foregroundColor(.pink)
+                    }
+                    Slider(value: $viewModel.maskColorDistanceThreshold, in: 10...60, step: 1)
+                        .tint(.pink)
+                    Text("低い → 検知しやすい（誤検知増）　高い → 厳密（見逃し増）")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                    Text("マスクを着けても反応しない場合は数値を下げてください")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+                .padding(.vertical, 4)
             }
 
             Section("危険な操作") {
@@ -1245,6 +1863,13 @@ struct SettingsView: View {
             showAlert = true
         }
     }
+
+    private func deleteFaceData(for user: FaceUser?) {
+        guard let user, let index = viewModel.store.users.firstIndex(where: { $0.id == user.id }) else { return }
+        viewModel.store.deleteUser(at: IndexSet(integer: index))
+        alertMessage = "\(user.name)さんの顔データを削除しました"
+        showAlert = true
+    }
 }
 
 // MARK: - Reusable Components
@@ -1253,6 +1878,7 @@ struct CameraPreviewView: UIViewRepresentable {
     let session: AVCaptureSession
     let rotationAngle: CGFloat
     var faces: [FaceRecognitionViewModel.RecognizedFace] = []
+    var isMaskDetected: Bool = false
 
     func makeUIView(context: Context) -> PreviewUIView {
         let view = PreviewUIView()
@@ -1284,7 +1910,7 @@ struct CameraPreviewView: UIViewRepresentable {
         }
         
         // Update face overlay
-        uiView.updateFaces(faces, rotationAngle: rotationAngle)
+        uiView.updateFaces(faces, rotationAngle: rotationAngle, isMaskDetected: isMaskDetected)
     }
 
     class PreviewUIView: UIView {
@@ -1312,7 +1938,7 @@ struct CameraPreviewView: UIViewRepresentable {
             }
         }
         
-        func updateFaces(_ faces: [FaceRecognitionViewModel.RecognizedFace], rotationAngle: CGFloat = 90) {
+        func updateFaces(_ faces: [FaceRecognitionViewModel.RecognizedFace], rotationAngle: CGFloat = 90, isMaskDetected: Bool = false) {
             overlayLayer.sublayers?.forEach { $0.removeFromSuperlayer() }
             
             let layerW = bounds.width
@@ -1336,8 +1962,8 @@ struct CameraPreviewView: UIViewRepresentable {
             }
             
             for face in faces {
-                let isRecognized = face.name != "未認証" && !face.name.isEmpty && face.name != "認証中..."
-                let color: UIColor = isRecognized ? .systemGreen : .cyan
+                let isRecognized = !isMaskDetected && face.name != "未認証" && !face.name.isEmpty && face.name != "認証中..."
+                let color: UIColor = isMaskDetected ? .systemOrange : (isRecognized ? .systemGreen : .cyan)
                 
                 // Bounding box
                 let tl = v2l(CGPoint(x: face.rect.minX, y: face.rect.maxY))
@@ -1376,9 +2002,10 @@ struct CameraPreviewView: UIViewRepresentable {
                     overlayLayer.addSublayer(sl)
                 }
                 
-                // Name label above box
-                if !face.name.isEmpty {
-                    let txt = face.name == "未認証" ? "UNKNOWN" : "\(face.name) \(face.score)%"
+                // Name label above box — while a mask is detected, always show the
+                // removal prompt here instead of the recognition name/UNKNOWN text.
+                if isMaskDetected || !face.name.isEmpty {
+                    let txt = isMaskDetected ? "顔を正面に向けてください" : (face.name == "未認証" ? "UNKNOWN" : "\(face.name) \(face.score)%")
                     let tl = CATextLayer()
                     tl.string = txt; tl.fontSize = 13
                     tl.font = UIFont.systemFont(ofSize: 13, weight: .bold)
@@ -1386,7 +2013,7 @@ struct CameraPreviewView: UIViewRepresentable {
                     tl.backgroundColor = color.withAlphaComponent(0.75).cgColor
                     tl.cornerRadius = 8; tl.masksToBounds = true
                     tl.alignmentMode = .center; tl.contentsScale = UITraitCollection.current.displayScale
-                    let w = max(layerRect.width, 100)
+                    let w = max(layerRect.width, isMaskDetected ? 220 : 100)
                     tl.frame = CGRect(x: layerRect.midX - w/2, y: layerRect.minY - 34, width: w, height: 26)
                     overlayLayer.addSublayer(tl)
                 }

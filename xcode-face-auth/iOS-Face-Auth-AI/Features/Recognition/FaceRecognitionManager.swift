@@ -41,6 +41,7 @@ class FaceRecognitionManager: ObservableObject {
 
     private let embeddingExtractor = FaceEmbeddingExtractor()
     private var currentPixelBuffer: CVPixelBuffer?
+    private var lastRecognizedVector: [Float]?
 
     // AuraFace raw cosine 기준: 본인 0.5~0.8, 타인 0.0~0.3
     private var similarityThreshold: Float {
@@ -174,6 +175,7 @@ class FaceRecognitionManager: ObservableObject {
         .sorted { $0.confidence > $1.confidence }
 
         detectedMatches = acceptedMatches(from: allResults)
+        lastRecognizedVector = detectedMatches.isEmpty ? nil : currentVector
 
         if let top = detectedMatches.first {
             DebugLogger.shared.log(
@@ -228,6 +230,10 @@ class FaceRecognitionManager: ObservableObject {
 
         if !alreadyCheckedIn || type == .checkOut {
             AttendanceStore.shared.record(employee: employee, confidence: confidence, type: type)
+            if let vector = lastRecognizedVector,
+               detectedMatches.contains(where: { $0.employee.id == employee.id }) {
+                EmployeeStore.shared.appendEmbedding(vector, toEmployeeId: employee.id)
+            }
         }
 
         lastAttendanceResult = AttendanceResult(
